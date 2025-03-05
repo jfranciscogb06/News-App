@@ -9,8 +9,9 @@ class NewsService {
 
   async getArticleTitles(symbol) {
     try {
-      // Get NewsAPI articles
-      const [recentNews, olderNews] = await Promise.all([
+      // Get articles from both sources in parallel
+      const [recentNews, olderNews, quote, search] = await Promise.all([
+        // NewsAPI recent articles
         this.newsapi.v2.everything({
           q: symbol,
           language: 'en',
@@ -18,6 +19,7 @@ class NewsService {
           pageSize: 100,
           from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
         }),
+        // NewsAPI older articles
         this.newsapi.v2.everything({
           q: symbol,
           language: 'en',
@@ -25,51 +27,60 @@ class NewsService {
           pageSize: 100,
           from: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString(),
           to: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-        })
-      ]);
-
-      // Get Yahoo Finance news
-      const [quote, search] = await Promise.all([
+        }),
+        // Yahoo Finance quote (for validation)
         yahooFinance.quoteSummary(symbol, {
           modules: ['price']
         }),
+        // Yahoo Finance news
         yahooFinance.search(symbol, {
-          newsCount: 100,
+          newsCount: 50,  // Reduced from 100 since we're combining sources
           enableFuzzyQuery: false
         })
       ]);
 
+      // Process NewsAPI articles
       const newsApiArticles = [...recentNews.articles, ...olderNews.articles].map(article => ({
         title: article.title,
         publishedAt: article.publishedAt,
         url: article.url,
-        source: article.source?.name,
+        source: article.source?.name || 'NewsAPI',
         imageUrl: article.urlToImage,
-        description: article.description
+        description: article.description,
+        provider: 'NewsAPI'
       }));
 
+      // Process Yahoo Finance articles
       const yahooArticles = (search.news || []).map(article => ({
         title: article.title,
         publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
         url: article.link,
         source: 'Yahoo Finance',
         imageUrl: article.thumbnail?.resolutions?.[0]?.url || null,
-        description: article.description
+        description: article.description,
+        provider: 'Yahoo Finance'
       }));
 
-      return [...newsApiArticles, ...yahooArticles];
+      // Combine and deduplicate articles
+      const allArticles = [...newsApiArticles, ...yahooArticles];
+      const uniqueArticles = this.deduplicateArticles(allArticles);
+
+      return uniqueArticles;
     } catch (error) {
       console.error('Error fetching news titles:', error);
       throw error;
     }
   }
 
-  chunkArray(array, size) {
-    const chunks = [];
-    for (let i = 0; i < array.length; i += size) {
-      chunks.push(array.slice(i, i + size));
-    }
-    return chunks;
+  deduplicateArticles(articles) {
+    const seen = new Set();
+    return articles.filter(article => {
+      // Create a key using title and first 100 chars of description
+      const key = `${article.title}-${article.description?.slice(0, 100)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   async getArticleDetails(urls) {
@@ -81,8 +92,7 @@ class NewsService {
           let articleDetails;
 
           if (url.includes('finance.yahoo.com')) {
-            // For Yahoo Finance articles, we'll use the data we already have
-            // since Yahoo's API doesn't provide a direct way to fetch by URL
+            // For Yahoo Finance articles, use the data we already have
             articleDetails = {
               title: url.title || '',
               description: url.description || '',
@@ -90,14 +100,14 @@ class NewsService {
               url: url.url,
               source: 'Yahoo Finance',
               publishedAt: url.publishedAt,
-              imageUrl: url.imageUrl
+              imageUrl: url.imageUrl,
+              provider: 'Yahoo Finance'
             };
           } else {
             // Existing NewsAPI logic
             const urlObj = new URL(url);
             const domain = urlObj.hostname.replace('www.', '');
             
-            // Try multiple search strategies
             const searchStrategies = [
               {
                 q: `url:"${url}"`,
@@ -136,7 +146,8 @@ class NewsService {
                       url: matchedArticle.url,
                       source: matchedArticle.source?.name || 'Unknown',
                       publishedAt: matchedArticle.publishedAt,
-                      imageUrl: matchedArticle.urlToImage
+                      imageUrl: matchedArticle.urlToImage,
+                      provider: 'NewsAPI'
                     };
                     break;
                   }
