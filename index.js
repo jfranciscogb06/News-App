@@ -6,7 +6,7 @@ const errorHandler = require('./src/utils/errorHandler');
 const app = express();
 
 app.use(express.json());
-app.use('/api', stockRoutes);
+app.use('/', stockRoutes);
 app.use(errorHandler);
 
 app.listen(config.port, () => {
