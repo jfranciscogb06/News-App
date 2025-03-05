@@ -8,46 +8,43 @@ class OpenAIService {
     });
   }
 
-  async analyzeArticles(symbol, articles, stockDetails, stockPrices) {
+  async analyzeArticles(symbol, articles) {
     const analysis = await this.openai.chat.completions.create({
       model: "gpt-4",
       messages: [
         {
           role: "system",
-          content: `You are a financial analyst expert. Analyze the provided news articles about ${symbol} stock and structure your analysis in the following format for each timeframe (7 days, 1 month, 3 months, 6 months).
+          content: `You are a financial analyst expert specializing in predicting market movements based on news analysis. For ${symbol} stock:
 
-          You must respond with ONLY a valid JSON object in exactly this format:
+          1. Filter and categorize the provided articles into timeframes (7 days, 1 month, 3 months, 6 months) based on their potential market impact.
+          2. Remove duplicate topics (if multiple articles cover the same event, choose the most comprehensive one).
+          3. For longer timeframes (3-6 months), include strategic analysis and market predictions.
+
+          Respond with a JSON object in this format:
           {
             "7days": {
-              "sentiment_score": <number between -100 and 100>,
-              "sentiment_explanation": <string explaining the score>,
-              "analysis": <string with comprehensive market outlook>,
+              "sentiment": <number -100 to 100>,
+              "summary": <brief market outlook>,
               "key_articles": [
                 {
                   "title": <article title>,
-                  "significance": <why this article matters>,
-                  "impact_on_sentiment": <how it affected the score>
+                  "impact": <how this news affects the stock>
                 }
-                // ... up to 10 most significant articles
               ]
             },
-            "1month": <same structure as 7days>,
-            "3months": <same structure as 7days>,
-            "6months": <same structure as 7days>
+            "1month": <same structure>,
+            "3months": <same structure with forward-looking analysis>,
+            "6months": <same structure with strategic predictions>
           }
 
-          Ensure your response is a properly formatted JSON object that can be parsed.`
+          Note: Longer timeframes should include more speculative analysis based on current trends and potential market developments.`
         },
         {
           role: "user",
-          content: JSON.stringify({
-            articles,
-            stockDetails,
-            stockPrices
-          })
+          content: JSON.stringify(articles)
         }
       ],
-      temperature: 0.5
+      temperature: 0.7
     });
 
     try {
