@@ -13,11 +13,12 @@ class OpenAIService {
       // Log the raw response for debugging
       console.log(`Raw ${context} response:`, response);
 
-      // Remove any markdown formatting
-      let cleaned = response.replace(/```json\n?|\n?```/g, '');
-      
-      // Remove any leading/trailing whitespace
-      cleaned = cleaned.trim();
+      // Remove any markdown formatting and extra whitespace
+      let cleaned = response.replace(/```json\n?|\n?```/g, '')
+        .replace(/\n\s+/g, '\n')  // Remove extra whitespace at start of lines
+        .replace(/,\s*([}\]])/g, '$1')  // Remove trailing commas
+        .replace(/\s+/g, ' ')  // Normalize whitespace
+        .trim();
       
       // Log the cleaned response
       console.log(`Cleaned ${context} response:`, cleaned);
@@ -116,26 +117,26 @@ class OpenAIService {
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes. Return ONLY a JSON object in this exact format:
+            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes. You must return a valid JSON object with no trailing commas and properly quoted strings. Return ONLY a JSON object in this exact format:
             {
               "7days": {
-                "sentiment": <predicted sentiment score between -100 and 100>,
-                "summary": <detailed prediction of what might happen in next 7 days>,
-                "price_drivers": ["potential future event 1", "potential future event 2", ...],
+                "sentiment": <number between -100 and 100>,
+                "summary": "<prediction for next 7 days>",
+                "price_drivers": ["<event 1>", "<event 2>", ...],
                 "key_articles": [
                   {
-                    "title": "string",
-                    "url": "string",
-                    "predicted_impact": "detailed analysis of potential future impact (at least 100 words)",
+                    "title": "<article title>",
+                    "url": "<article url>",
+                    "predicted_impact": "<detailed impact analysis>",
                     "confidence": "high" | "medium" | "low",
-                    "potential_price_effect": "detailed prediction of price movement with reasoning (at least 50 words)",
-                    "detailed_analysis": "comprehensive analysis of the article's implications (at least 200 words)"
+                    "potential_price_effect": "<price prediction with reasoning>",
+                    "detailed_analysis": "<comprehensive analysis>"
                   }
                 ]
               },
-              "1month": <same structure as 7days, but for 1-month predictions>,
-              "3months": <same structure as 7days, but for 3-month predictions>,
-              "6months": <same structure as 7days, but for 6-month predictions>
+              "1month": <same structure as 7days>,
+              "3months": <same structure as 7days>,
+              "6months": <same structure as 7days>
             }
             
             Focus on:
@@ -148,6 +149,7 @@ class OpenAIService {
             
             Provide comprehensive analysis for each timeframe and article.
             Include at least 5 key articles for each timeframe when available.
+            Ensure all text fields are properly quoted and there are no trailing commas.
             Do not include any other text or formatting in your response.`
           },
           {
@@ -156,7 +158,7 @@ class OpenAIService {
           }
         ],
         temperature: 0.7,
-        max_tokens: 4000
+        max_tokens: 8000  // Increased from 4000 to handle more articles
       });
 
       if (!analysis.choices?.[0]?.message?.content) {
