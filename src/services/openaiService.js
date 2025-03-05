@@ -8,6 +8,47 @@ class OpenAIService {
     });
   }
 
+  async filterRelevantArticles(symbol, articles) {
+    const analysis = await this.openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select the most relevant ones that could impact stock price.
+
+          Select articles that:
+          - Indicate significant company developments
+          - Suggest market-moving news
+          - Represent unique events (avoid duplicates)
+          - Cover different timeframes (7 days to 6 months impact)
+
+          Return a JSON object in this format:
+          {
+            "selected_articles": {
+              "7days": [<urls>],
+              "1month": [<urls>],
+              "3months": [<urls>],
+              "6months": [<urls>]
+            }
+          }`
+        },
+        {
+          role: "user",
+          content: JSON.stringify(articles)
+        }
+      ],
+      temperature: 0.5,
+      max_tokens: 2000
+    });
+
+    try {
+      return JSON.parse(analysis.choices[0].message.content);
+    } catch (error) {
+      console.error('Error parsing OpenAI response:', error);
+      throw new Error('Failed to parse article filtering response');
+    }
+  }
+
   async analyzeArticles(symbol, articles) {
     const analysis = await this.openai.chat.completions.create({
       model: "gpt-4o",
