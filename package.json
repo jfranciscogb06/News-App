@@ -15,7 +15,8 @@
     "dotenv": "^16.4.1",
     "express": "^4.18.2",
     "newsapi": "^2.4.1",
-    "openai": "^4.86.1"
+    "openai": "^4.86.1",
+    "yahoo-finance2": "^2.13.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
