@@ -13,18 +13,20 @@ class NewsService {
       const [recentNews, olderNews, quote, search] = await Promise.all([
         // NewsAPI recent articles
         this.newsapi.v2.everything({
-          q: symbol,
+          q: `${symbol} stock OR (${symbol} company)`,  // Expanded search query
           language: 'en',
           sortBy: 'publishedAt',
           pageSize: 100,
+          searchIn: 'title,description',  // Focus on relevant fields
           from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
         }),
         // NewsAPI older articles
         this.newsapi.v2.everything({
-          q: symbol,
+          q: `${symbol} stock OR (${symbol} company)`,  // Expanded search query
           language: 'en',
           sortBy: 'relevancy',
           pageSize: 100,
+          searchIn: 'title,description',  // Focus on relevant fields
           from: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString(),
           to: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
         }),
@@ -34,21 +36,29 @@ class NewsService {
         }),
         // Yahoo Finance news
         yahooFinance.search(symbol, {
-          newsCount: 50,  // Reduced from 100 since we're combining sources
+          newsCount: 50,
           enableFuzzyQuery: false
         })
       ]);
 
-      // Process NewsAPI articles
-      const newsApiArticles = [...recentNews.articles, ...olderNews.articles].map(article => ({
-        title: article.title,
-        publishedAt: article.publishedAt,
-        url: article.url,
-        source: article.source?.name || 'NewsAPI',
-        imageUrl: article.urlToImage,
-        description: article.description,
-        provider: 'NewsAPI'
-      }));
+      // Process NewsAPI articles with better filtering
+      const newsApiArticles = [...recentNews.articles, ...olderNews.articles]
+        .filter(article => 
+          // Ensure article is relevant to the company
+          (article.title?.toLowerCase().includes(symbol.toLowerCase()) ||
+           article.description?.toLowerCase().includes(symbol.toLowerCase())) &&
+          // Exclude articles that are too generic
+          !article.title?.toLowerCase().includes('stock market') &&
+          !article.title?.toLowerCase().includes('stocks to watch')
+        )
+        .map(article => ({
+          title: article.title,
+          publishedAt: article.publishedAt,
+          url: article.url,
+          source: article.source?.name || 'NewsAPI',
+          description: article.description,
+          provider: 'NewsAPI'
+        }));
 
       // Process Yahoo Finance articles
       const yahooArticles = (search.news || []).map(article => ({
@@ -56,7 +66,6 @@ class NewsService {
         publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
         url: article.link,
         source: 'Yahoo Finance',
-        imageUrl: article.thumbnail?.resolutions?.[0]?.url || null,
         description: article.description,
         provider: 'Yahoo Finance'
       }));
@@ -64,6 +73,11 @@ class NewsService {
       // Combine and deduplicate articles
       const allArticles = [...newsApiArticles, ...yahooArticles];
       const uniqueArticles = this.deduplicateArticles(allArticles);
+
+      // Log article counts for debugging
+      console.log(`Found ${newsApiArticles.length} NewsAPI articles`);
+      console.log(`Found ${yahooArticles.length} Yahoo Finance articles`);
+      console.log(`Total unique articles after deduplication: ${uniqueArticles.length}`);
 
       return uniqueArticles;
     } catch (error) {
@@ -92,7 +106,6 @@ class NewsService {
           let articleDetails;
 
           if (url.includes('finance.yahoo.com')) {
-            // For Yahoo Finance articles, use the data we already have
             articleDetails = {
               title: url.title || '',
               description: url.description || '',
@@ -100,7 +113,6 @@ class NewsService {
               url: url.url,
               source: 'Yahoo Finance',
               publishedAt: url.publishedAt,
-              imageUrl: url.imageUrl,
               provider: 'Yahoo Finance'
             };
           } else {
@@ -146,7 +158,6 @@ class NewsService {
                       url: matchedArticle.url,
                       source: matchedArticle.source?.name || 'Unknown',
                       publishedAt: matchedArticle.publishedAt,
-                      imageUrl: matchedArticle.urlToImage,
                       provider: 'NewsAPI'
                     };
                     break;

@@ -126,7 +126,6 @@ class OpenAIService {
                   {
                     "title": "string",
                     "url": "string",
-                    "imageUrl": "string",
                     "predicted_impact": "detailed analysis of potential future impact (at least 100 words)",
                     "confidence": "high" | "medium" | "low",
                     "potential_price_effect": "detailed prediction of price movement with reasoning (at least 50 words)",
