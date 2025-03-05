@@ -14,34 +14,29 @@ class OpenAIService {
       messages: [
         {
           role: "system",
-          content: `You are a financial analyst expert. Analyze the provided news articles about ${symbol} stock and structure your analysis in the following format for each timeframe (7 days, 1 month, 3 months, 6 months):
+          content: `You are a financial analyst expert. Analyze the provided news articles about ${symbol} stock and structure your analysis in the following format for each timeframe (7 days, 1 month, 3 months, 6 months).
 
-          For each timeframe, provide:
-          1. A sentiment score (-100 to +100) with brief explanation
-          2. A comprehensive analysis of potential impact and market outlook
-          3. Top 10 most significant articles that support this analysis, including:
-             - Article title
-             - Brief explanation of why this article is significant
-             - How it influenced the sentiment score
-          
-          Structure the response as a JSON object with the following format:
+          You must respond with ONLY a valid JSON object in exactly this format:
           {
             "7days": {
-              "sentiment_score": number,
-              "sentiment_explanation": "string",
-              "analysis": "string",
+              "sentiment_score": <number between -100 and 100>,
+              "sentiment_explanation": <string explaining the score>,
+              "analysis": <string with comprehensive market outlook>,
               "key_articles": [
                 {
-                  "title": "string",
-                  "significance": "string",
-                  "impact_on_sentiment": "string"
+                  "title": <article title>,
+                  "significance": <why this article matters>,
+                  "impact_on_sentiment": <how it affected the score>
                 }
+                // ... up to 10 most significant articles
               ]
             },
-            "1month": { same structure },
-            "3months": { same structure },
-            "6months": { same structure }
-          }`
+            "1month": <same structure as 7days>,
+            "3months": <same structure as 7days>,
+            "6months": <same structure as 7days>
+          }
+
+          Ensure your response is a properly formatted JSON object that can be parsed.`
         },
         {
           role: "user",
@@ -52,11 +47,15 @@ class OpenAIService {
           })
         }
       ],
-      temperature: 0.5,
-      response_format: { type: "json_object" }
+      temperature: 0.5
     });
 
-    return JSON.parse(analysis.choices[0].message.content);
+    try {
+      return JSON.parse(analysis.choices[0].message.content);
+    } catch (error) {
+      console.error('Error parsing OpenAI response:', error);
+      throw new Error('Failed to parse analysis response');
+    }
   }
 }
 
