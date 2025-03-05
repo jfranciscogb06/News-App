@@ -38,44 +38,63 @@ class NewsService {
     }
   }
 
+  // Helper function to chunk array into smaller pieces
+  chunkArray(array, size) {
+    const chunks = [];
+    for (let i = 0; i < array.length; i += size) {
+      chunks.push(array.slice(i, i + size));
+    }
+    return chunks;
+  }
+
   async getArticleDetails(urls) {
     try {
-      // Create a query that includes all URLs
-      const urlQueries = urls.map(url => {
-        // Extract domain and relevant parts from URL for better searching
-        const urlObj = new URL(url);
-        const searchTerms = urlObj.pathname.split('/').filter(Boolean).join(' ');
-        return `url:"${url}" OR "${searchTerms}"`;
-      });
+      // Split URLs into chunks of 5 to keep queries short
+      const urlChunks = this.chunkArray(urls, 5);
+      const allArticles = [];
 
-      // Fetch articles in batches to avoid rate limits
-      const articles = await this.newsapi.v2.everything({
-        q: urlQueries.join(' OR '),
-        language: 'en',
-        pageSize: urls.length
-      });
+      // Process each chunk
+      for (const chunk of urlChunks) {
+        const urlQueries = chunk.map(url => {
+          const urlObj = new URL(url);
+          // Create shorter search terms from URL
+          const domain = urlObj.hostname.replace('www.', '');
+          const path = urlObj.pathname.split('/').pop() || '';
+          return `(${domain} AND ${path})`;
+        });
 
-      if (!articles.articles?.length) {
-        throw new Error('No articles found for the given URLs');
+        // Fetch articles for this chunk
+        const response = await this.newsapi.v2.everything({
+          q: urlQueries.join(' OR '),
+          language: 'en',
+          pageSize: chunk.length * 2 // Get a few extra in case of matches
+        });
+
+        if (response.articles?.length) {
+          // Filter and map articles from this chunk
+          const matchedArticles = response.articles
+            .filter(article => chunk.includes(article.url))
+            .map(article => ({
+              title: article.title,
+              description: article.description || '',
+              content: article.content || '',
+              url: article.url,
+              source: article.source?.name || 'Unknown',
+              publishedAt: article.publishedAt
+            }));
+
+          allArticles.push(...matchedArticles);
+        }
+
+        // Add a small delay between requests to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
-      // Match returned articles with requested URLs
-      const detailedArticles = articles.articles
-        .filter(article => urls.includes(article.url))
-        .map(article => ({
-          title: article.title,
-          description: article.description || '',
-          content: article.content || '',
-          url: article.url,
-          source: article.source?.name || 'Unknown',
-          publishedAt: article.publishedAt
-        }));
-
-      if (!detailedArticles.length) {
-        throw new Error('Could not find matching articles');
+      if (!allArticles.length) {
+        throw new Error('Could not find any matching articles');
       }
 
-      return detailedArticles;
+      return allArticles;
     } catch (error) {
       console.error('Error fetching article details:', error);
       throw error;
