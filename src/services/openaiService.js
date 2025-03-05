@@ -8,6 +8,41 @@ class OpenAIService {
     });
   }
 
+  async filterRelevantArticles(symbol, articles) {
+    const analysis = await this.openai.chat.completions.create({
+      model: "gpt-4",
+      messages: [
+        {
+          role: "system",
+          content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select the most relevant ones that could impact stock price.
+
+          Select articles that:
+          - Indicate significant company developments
+          - Suggest market-moving news
+          - Represent unique events (avoid duplicates)
+          - Cover different timeframes (7 days to 6 months impact)
+
+          Return a JSON array of URLs for the most relevant articles, structured by timeframe:
+          {
+            "selected_articles": {
+              "7days": [<urls>],
+              "1month": [<urls>],
+              "3months": [<urls>],
+              "6months": [<urls>]
+            }
+          }`
+        },
+        {
+          role: "user",
+          content: JSON.stringify(articles)
+        }
+      ],
+      temperature: 0.5
+    });
+
+    return JSON.parse(analysis.choices[0].message.content);
+  }
+
   async analyzeArticles(symbol, articles) {
     const analysis = await this.openai.chat.completions.create({
       model: "gpt-4",
@@ -16,7 +51,7 @@ class OpenAIService {
           role: "system",
           content: `You are a financial analyst expert specializing in predicting market movements based on news analysis. For ${symbol} stock:
 
-          1. Analyze all provided articles (approximately 100) and identify key market-moving events, trends, and potential future catalysts.
+          1. Analyze these pre-filtered articles and identify key market-moving events, trends, and potential future catalysts.
           2. Group related articles together and extract the most significant insights that could affect stock price.
           3. For each timeframe, identify patterns and potential market reactions.
 
@@ -48,30 +83,17 @@ class OpenAIService {
             "1month": <same structure with focus on emerging trends>,
             "3months": <same structure with industry-wide analysis>,
             "6months": <same structure with long-term strategic outlook>
-          }
-
-          Important:
-          - Include at least 5-10 significant articles per timeframe
-          - Prioritize articles that suggest clear price movements
-          - For longer timeframes, analyze how current events might evolve
-          - Consider market cycles and seasonal patterns
-          - Factor in historical price reactions to similar news`
+          }`
         },
         {
           role: "user",
           content: JSON.stringify(articles)
         }
       ],
-      temperature: 0.7,
-      max_tokens: 4000
+      temperature: 0.7
     });
 
-    try {
-      return JSON.parse(analysis.choices[0].message.content);
-    } catch (error) {
-      console.error('Error parsing OpenAI response:', error);
-      throw new Error('Failed to parse analysis response');
-    }
+    return JSON.parse(analysis.choices[0].message.content);
   }
 }
 
