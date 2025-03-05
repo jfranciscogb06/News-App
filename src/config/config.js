@@ -7,5 +7,8 @@ module.exports = {
   },
   newsapi: {
     apiKey: process.env.NEWS_API_KEY
+  },
+  polygon: {
+    apiKey: process.env.POLYGON_API_KEY
   }
 }; 

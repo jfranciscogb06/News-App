@@ -8,7 +8,7 @@ class OpenAIService {
     });
   }
 
-  async analyzeArticles(symbol, articles) {
+  async analyzeArticles(symbol, articles, stockDetails, stockPrices) {
     const analysis = await this.openai.chat.completions.create({
       model: "gpt-4",
       messages: [
@@ -18,11 +18,16 @@ class OpenAIService {
           1. Categorize each article by its potential impact timeframe (7 days, 1 month, 3 months, 6 months)
           2. Provide a summary of each article
           3. Assign a sentiment score from -100 (extremely bearish) to 100 (extremely bullish)
-          4. Group articles by timeframe and provide an overall analysis for each timeframe`
+          4. Consider the current stock details and price trends in your analysis
+          5. Group articles by timeframe and provide an overall analysis for each timeframe`
         },
         {
           role: "user",
-          content: JSON.stringify(articles)
+          content: JSON.stringify({
+            articles,
+            stockDetails,
+            stockPrices
+          })
         }
       ],
       temperature: 0.5,

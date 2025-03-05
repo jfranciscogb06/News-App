@@ -10,13 +10,14 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "openai": "^4.0.0",
+    "@polygon.io/client-js": "^7.4.0",
     "axios": "^1.6.7",
     "dotenv": "^16.4.1",
-    "newsapi": "^2.4.1"
+    "express": "^4.18.2",
+    "newsapi": "^2.4.1",
+    "openai": "^4.86.1"
   },
   "devDependencies": {
-    "nodemon": "^2.0.22"
+    "nodemon": "^3.1.0"
   }
-} 
+}
