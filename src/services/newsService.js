@@ -9,48 +9,66 @@ class NewsService {
 
   async getArticleTitles(symbol) {
     try {
+      console.log(`Fetching news for ${symbol}...`);
+
       // Get articles from both sources in parallel
       const [recentNews, olderNews, quote, search] = await Promise.all([
         // NewsAPI recent articles
         this.newsapi.v2.everything({
-          q: `${symbol} stock OR (${symbol} company)`,  // Expanded search query
+          q: `${symbol} stock OR (${symbol} company)`,
           language: 'en',
           sortBy: 'publishedAt',
           pageSize: 100,
-          searchIn: 'title,description',  // Focus on relevant fields
+          searchIn: 'title,description',
           from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+        }).catch(err => {
+          console.error('Error fetching recent NewsAPI articles:', err);
+          return { articles: [] };
         }),
         // NewsAPI older articles
         this.newsapi.v2.everything({
-          q: `${symbol} stock OR (${symbol} company)`,  // Expanded search query
+          q: `${symbol} stock OR (${symbol} company)`,
           language: 'en',
           sortBy: 'relevancy',
           pageSize: 100,
-          searchIn: 'title,description',  // Focus on relevant fields
+          searchIn: 'title,description',
           from: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString(),
           to: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+        }).catch(err => {
+          console.error('Error fetching older NewsAPI articles:', err);
+          return { articles: [] };
         }),
         // Yahoo Finance quote (for validation)
         yahooFinance.quoteSummary(symbol, {
           modules: ['price']
+        }).catch(err => {
+          console.error('Error fetching Yahoo quote:', err);
+          return null;
         }),
         // Yahoo Finance news
-        yahooFinance.search(symbol, {
-          newsCount: 50,
-          enableFuzzyQuery: false
+        yahooFinance.search(symbol).catch(err => {
+          console.error('Error fetching Yahoo news:', err);
+          return { news: [] };
         })
       ]);
 
+      console.log('Raw NewsAPI recent articles count:', recentNews.articles?.length || 0);
+      console.log('Raw NewsAPI older articles count:', olderNews.articles?.length || 0);
+      console.log('Raw Yahoo Finance news count:', search?.news?.length || 0);
+
       // Process NewsAPI articles with better filtering
-      const newsApiArticles = [...recentNews.articles, ...olderNews.articles]
-        .filter(article => 
+      const newsApiArticles = [...(recentNews.articles || []), ...(olderNews.articles || [])]
+        .filter(article => {
+          const titleLower = article.title?.toLowerCase() || '';
+          const descLower = article.description?.toLowerCase() || '';
+          const symbolLower = symbol.toLowerCase();
+
           // Ensure article is relevant to the company
-          (article.title?.toLowerCase().includes(symbol.toLowerCase()) ||
-           article.description?.toLowerCase().includes(symbol.toLowerCase())) &&
-          // Exclude articles that are too generic
-          !article.title?.toLowerCase().includes('stock market') &&
-          !article.title?.toLowerCase().includes('stocks to watch')
-        )
+          return (titleLower.includes(symbolLower) || descLower.includes(symbolLower)) &&
+            // Exclude articles that are too generic
+            !titleLower.includes('stock market') &&
+            !titleLower.includes('stocks to watch');
+        })
         .map(article => ({
           title: article.title,
           publishedAt: article.publishedAt,
@@ -61,7 +79,7 @@ class NewsService {
         }));
 
       // Process Yahoo Finance articles
-      const yahooArticles = (search.news || []).map(article => ({
+      const yahooArticles = (search?.news || []).map(article => ({
         title: article.title,
         publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
         url: article.link,
@@ -75,9 +93,9 @@ class NewsService {
       const uniqueArticles = this.deduplicateArticles(allArticles);
 
       // Log article counts for debugging
-      console.log(`Found ${newsApiArticles.length} NewsAPI articles`);
-      console.log(`Found ${yahooArticles.length} Yahoo Finance articles`);
-      console.log(`Total unique articles after deduplication: ${uniqueArticles.length}`);
+      console.log(`Filtered NewsAPI articles: ${newsApiArticles.length}`);
+      console.log(`Filtered Yahoo articles: ${yahooArticles.length}`);
+      console.log(`Final unique articles: ${uniqueArticles.length}`);
 
       return uniqueArticles;
     } catch (error) {
@@ -87,12 +105,26 @@ class NewsService {
   }
 
   deduplicateArticles(articles) {
-    const seen = new Set();
+    const seen = new Map();
     return articles.filter(article => {
-      // Create a key using title and first 100 chars of description
-      const key = `${article.title}-${article.description?.slice(0, 100)}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      // Normalize the title and description for comparison
+      const title = article.title?.toLowerCase().trim() || '';
+      const desc = article.description?.toLowerCase().trim() || '';
+      
+      // Create multiple keys for better deduplication
+      const titleKey = title;
+      const urlKey = article.url?.toLowerCase();
+      const contentKey = `${title}-${desc.slice(0, 100)}`;
+
+      // Check if we've seen this article before
+      if (seen.has(titleKey) || seen.has(urlKey) || seen.has(contentKey)) {
+        return false;
+      }
+
+      // Mark this article as seen
+      seen.set(titleKey, true);
+      seen.set(urlKey, true);
+      seen.set(contentKey, true);
       return true;
     });
   }
