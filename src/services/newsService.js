@@ -29,7 +29,8 @@ class NewsService {
       return [...recentNews.articles, ...olderNews.articles].map(article => ({
         title: article.title,
         publishedAt: article.publishedAt,
-        url: article.url
+        url: article.url,
+        source: article.source?.name
       }));
     } catch (error) {
       console.error('Error fetching news titles:', error);
@@ -47,90 +48,80 @@ class NewsService {
 
   async getArticleDetails(urls) {
     try {
-      // Split URLs into smaller chunks
-      const urlChunks = this.chunkArray(urls, 3); // Reduced chunk size
       const allArticles = [];
 
-      // Process each chunk
-      for (const chunk of urlChunks) {
+      // Try to fetch each article individually
+      for (const url of urls) {
         try {
-          // Create a simpler query using domains
-          const domains = chunk.map(url => {
-            const urlObj = new URL(url);
-            return urlObj.hostname.replace('www.', '');
-          });
+          const urlObj = new URL(url);
+          const domain = urlObj.hostname.replace('www.', '');
+          
+          // Try multiple search strategies
+          const searchStrategies = [
+            // Strategy 1: Search by exact URL
+            {
+              q: `url:"${url}"`,
+              pageSize: 10
+            },
+            // Strategy 2: Search by domain and title keywords
+            {
+              domains: domain,
+              pageSize: 100,
+              sortBy: 'relevancy'
+            },
+            // Strategy 3: Search by domain only
+            {
+              domains: domain,
+              pageSize: 100,
+              sortBy: 'publishedAt'
+            }
+          ];
 
-          // Fetch articles for this chunk
-          const response = await this.newsapi.v2.everything({
-            domains: domains.join(','), // Use domains parameter instead of q
-            language: 'en',
-            pageSize: 100, // Increased to ensure we catch the articles
-            sortBy: 'relevancy'
-          });
+          for (const strategy of searchStrategies) {
+            try {
+              const response = await this.newsapi.v2.everything({
+                ...strategy,
+                language: 'en'
+              });
 
-          if (response.articles?.length) {
-            // Find exact URL matches
-            const matchedArticles = response.articles
-              .filter(article => chunk.includes(article.url))
-              .map(article => ({
-                title: article.title || '',
-                description: article.description || '',
-                content: article.content || '',
-                url: article.url,
-                source: article.source?.name || 'Unknown',
-                publishedAt: article.publishedAt
-              }));
+              if (response.articles?.length) {
+                // Find the matching article
+                const matchedArticle = response.articles.find(article => 
+                  article.url === url || 
+                  article.url.includes(urlObj.pathname)
+                );
 
-            allArticles.push(...matchedArticles);
+                if (matchedArticle) {
+                  allArticles.push({
+                    title: matchedArticle.title || '',
+                    description: matchedArticle.description || '',
+                    content: matchedArticle.content || '',
+                    url: matchedArticle.url,
+                    source: matchedArticle.source?.name || 'Unknown',
+                    publishedAt: matchedArticle.publishedAt
+                  });
+                  break; // Found the article, move to next URL
+                }
+              }
+
+              // Add delay between requests
+              await new Promise(resolve => setTimeout(resolve, 200));
+            } catch (strategyError) {
+              console.error('Strategy failed:', strategyError);
+              continue; // Try next strategy
+            }
           }
-
-          // Add delay between requests
-          await new Promise(resolve => setTimeout(resolve, 500)); // Increased delay
-        } catch (chunkError) {
-          console.error('Error processing chunk:', chunkError);
-          // Continue with next chunk even if this one fails
-          continue;
+        } catch (urlError) {
+          console.error('Error processing URL:', urlError);
+          continue; // Move to next URL
         }
       }
 
-      // If we found any articles, return them
-      if (allArticles.length > 0) {
-        return allArticles;
-      }
-
-      // If no articles found through domains, try one more time with direct URLs
-      const fallbackArticles = await Promise.all(
-        urls.map(async (url) => {
-          try {
-            const response = await this.newsapi.v2.everything({
-              q: url,
-              language: 'en',
-              pageSize: 1
-            });
-            return response.articles[0];
-          } catch (error) {
-            console.error('Error fetching individual article:', error);
-            return null;
-          }
-        })
-      );
-
-      const validArticles = fallbackArticles
-        .filter(Boolean)
-        .map(article => ({
-          title: article.title || '',
-          description: article.description || '',
-          content: article.content || '',
-          url: article.url,
-          source: article.source?.name || 'Unknown',
-          publishedAt: article.publishedAt
-        }));
-
-      if (!validArticles.length) {
+      if (!allArticles.length) {
         throw new Error('Could not find any matching articles');
       }
 
-      return validArticles;
+      return allArticles;
     } catch (error) {
       console.error('Error fetching article details:', error);
       throw error;
