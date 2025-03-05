@@ -1,11 +1,10 @@
 const NewsAPI = require('newsapi');
-const yahooFinance = require('yahoo-finance2');
+const YahooFinance = require('yahoo-finance2').default;
 const config = require('../config/config');
 
 class NewsService {
   constructor() {
     this.newsapi = new NewsAPI(config.newsapi.apiKey);
-    this.yahooFinance = yahooFinance;
   }
 
   async getArticleTitles(symbol) {
@@ -30,7 +29,7 @@ class NewsService {
       ]);
 
       // Get Yahoo Finance news
-      const yahooQuote = await this.yahooFinance.quoteSummary(symbol, {
+      const yahooQuote = await YahooFinance.quoteSummary(symbol, {
         modules: ['assetProfile', 'news']
       });
 
