@@ -8,6 +8,18 @@ class OpenAIService {
     });
   }
 
+  // Helper function to clean OpenAI response
+  cleanJsonResponse(response) {
+    try {
+      // Remove markdown code blocks if present
+      const cleanedResponse = response.replace(/```json\n?|\n?```/g, '');
+      return JSON.parse(cleanedResponse);
+    } catch (error) {
+      console.error('Error parsing OpenAI response:', error);
+      throw new Error('Failed to parse analysis response');
+    }
+  }
+
   async filterRelevantArticles(symbol, articles) {
     const analysis = await this.openai.chat.completions.create({
       model: "gpt-4-0125-preview",
@@ -22,7 +34,7 @@ class OpenAIService {
           - Represent unique events (avoid duplicates)
           - Cover different timeframes (7 days to 6 months impact)
 
-          Return a JSON array of URLs for the most relevant articles, structured by timeframe:
+          Return ONLY a valid JSON object (no markdown formatting) in this format:
           {
             "selected_articles": {
               "7days": [<urls>],
@@ -40,7 +52,7 @@ class OpenAIService {
       temperature: 0.5
     });
 
-    return JSON.parse(analysis.choices[0].message.content);
+    return this.cleanJsonResponse(analysis.choices[0].message.content);
   }
 
   async analyzeArticles(symbol, articles) {
@@ -65,7 +77,7 @@ class OpenAIService {
           - Regulatory impacts
           - Market sentiment shifts
 
-          Respond with a JSON object in this format:
+          Return ONLY a valid JSON object (no markdown formatting) in this format:
           {
             "7days": {
               "sentiment": <number -100 to 100>,
@@ -93,7 +105,7 @@ class OpenAIService {
       temperature: 0.7
     });
 
-    return JSON.parse(analysis.choices[0].message.content);
+    return this.cleanJsonResponse(analysis.choices[0].message.content);
   }
 }
 
