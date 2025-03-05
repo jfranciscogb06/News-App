@@ -23,6 +23,21 @@ class OpenAIService {
     }
   }
 
+  validateAnalysisStructure(data) {
+    const timeframes = ['7days', '1month', '3months', '6months'];
+    
+    for (const timeframe of timeframes) {
+      if (!data[timeframe] ||
+          typeof data[timeframe].sentiment !== 'number' ||
+          typeof data[timeframe].summary !== 'string' ||
+          !Array.isArray(data[timeframe].price_drivers) ||
+          !Array.isArray(data[timeframe].key_articles)) {
+        throw new Error(`Invalid structure for timeframe: ${timeframe}`);
+      }
+    }
+    return true;
+  }
+
   async filterRelevantArticles(symbol, articles) {
     try {
       const analysis = await this.openai.chat.completions.create({
@@ -80,68 +95,70 @@ class OpenAIService {
   }
 
   async analyzeArticles(symbol, articles) {
-    const analysis = await this.openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content: `You are a financial analyst expert specializing in predicting market movements based on news analysis. For ${symbol} stock:
-
-          1. Analyze all provided articles (approximately 100) and identify key market-moving events, trends, and potential future catalysts.
-          2. Group related articles together and extract the most significant insights that could affect stock price.
-          3. For each timeframe, identify patterns and potential market reactions.
-
-          Focus on:
-          - Revenue/earnings impacts
-          - Market share changes
-          - Industry trends
-          - Competitive positioning
-          - Product launches/developments
-          - Management changes
-          - Regulatory impacts
-          - Market sentiment shifts
-
-          Respond with a JSON object in this format:
-          {
-            "7days": {
-              "sentiment": <number -100 to 100>,
-              "summary": <comprehensive market outlook>,
-              "price_drivers": [<list of key factors affecting price>],
-              "key_articles": [
-                {
-                  "title": <article title>,
-                  "impact": <detailed analysis of price impact>,
-                  "confidence": <high/medium/low>,
-                  "potential_price_effect": <estimated % change>
-                }
-              ]
-            },
-            "1month": <same structure with focus on emerging trends>,
-            "3months": <same structure with industry-wide analysis>,
-            "6months": <same structure with long-term strategic outlook>
-          }
-
-          Important:
-          - Include at least 5-10 significant articles per timeframe
-          - Prioritize articles that suggest clear price movements
-          - For longer timeframes, analyze how current events might evolve
-          - Consider market cycles and seasonal patterns
-          - Factor in historical price reactions to similar news`
-        },
-        {
-          role: "user",
-          content: JSON.stringify(articles)
-        }
-      ],
-      temperature: 0.7,
-      max_tokens: 4000
-    });
-
     try {
-      return JSON.parse(analysis.choices[0].message.content);
+      const analysis = await this.openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are a financial analyst expert specializing in predicting market movements based on news analysis. For ${symbol} stock:
+
+            1. Analyze all provided articles and identify key market-moving events, trends, and potential future catalysts.
+            2. Group related articles together and extract the most significant insights that could affect stock price.
+            3. For each timeframe, identify patterns and potential market reactions.
+
+            Focus on:
+            - Revenue/earnings impacts
+            - Market share changes
+            - Industry trends
+            - Competitive positioning
+            - Product launches/developments
+            - Management changes
+            - Regulatory impacts
+            - Market sentiment shifts
+
+            You must return a valid JSON object exactly in this format, with no additional text or formatting:
+            {
+              "7days": {
+                "sentiment": <number -100 to 100>,
+                "summary": <string: comprehensive market outlook>,
+                "price_drivers": [<array of strings: key factors affecting price>],
+                "key_articles": [
+                  {
+                    "title": <string: article title>,
+                    "impact": <string: detailed analysis of price impact>,
+                    "confidence": <string: "high"/"medium"/"low">,
+                    "potential_price_effect": <string: estimated % change>
+                  }
+                ]
+              },
+              "1month": <same structure>,
+              "3months": <same structure>,
+              "6months": <same structure>
+            }`
+          },
+          {
+            role: "user",
+            content: JSON.stringify(articles)
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 4000
+      });
+
+      if (!analysis.choices?.[0]?.message?.content) {
+        throw new Error('Invalid response from OpenAI');
+      }
+
+      const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
+      
+      // Validate the response structure
+      this.validateAnalysisStructure(result);
+
+      return result;
     } catch (error) {
-      console.error('Error parsing OpenAI response:', error);
-      throw new Error('Failed to parse analysis response');
+      console.error('Error in analyzeArticles:', error);
+      throw new Error(`Failed to analyze articles: ${error.message}`);
     }
   }
 }
