@@ -5,6 +5,7 @@ const config = require('../config/config');
 class NewsService {
   constructor() {
     this.newsapi = new NewsAPI(config.newsapi.apiKey);
+    this.yahooFinance = yahooFinance;
   }
 
   async getArticleTitles(symbol) {
@@ -29,8 +30,8 @@ class NewsService {
       ]);
 
       // Get Yahoo Finance news
-      const yahooNews = await yahooFinance.quote(symbol, {
-        modules: ['news']
+      const yahooQuote = await this.yahooFinance.quoteSummary(symbol, {
+        modules: ['assetProfile', 'news']
       });
 
       const newsApiArticles = [...recentNews.articles, ...olderNews.articles].map(article => ({
@@ -42,7 +43,7 @@ class NewsService {
         description: article.description
       }));
 
-      const yahooArticles = (yahooNews.news || []).map(article => ({
+      const yahooArticles = (yahooQuote.news || []).map(article => ({
         title: article.title,
         publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
         url: article.link,
