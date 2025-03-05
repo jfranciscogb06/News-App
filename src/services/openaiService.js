@@ -120,14 +120,17 @@ class OpenAIService {
             {
               "7days": {
                 "sentiment": <predicted sentiment score between -100 and 100>,
-                "summary": <brief prediction of what might happen in next 7 days>,
+                "summary": <detailed prediction of what might happen in next 7 days>,
                 "price_drivers": ["potential future event 1", "potential future event 2", ...],
                 "key_articles": [
                   {
                     "title": "string",
-                    "predicted_impact": "string describing potential future impact",
+                    "url": "string",
+                    "imageUrl": "string",
+                    "predicted_impact": "detailed analysis of potential future impact (at least 100 words)",
                     "confidence": "high" | "medium" | "low",
-                    "potential_price_effect": "predicted price movement and reasoning"
+                    "potential_price_effect": "detailed prediction of price movement with reasoning (at least 50 words)",
+                    "detailed_analysis": "comprehensive analysis of the article's implications (at least 200 words)"
                   }
                 ]
               },
@@ -141,7 +144,11 @@ class OpenAIService {
             - Upcoming catalysts or risks
             - Market trends that could affect the stock
             - Potential scenarios and their likelihood
+            - Detailed reasoning for each prediction
+            - Long-term implications of current developments
             
+            Provide comprehensive analysis for each timeframe and article.
+            Include at least 5 key articles for each timeframe when available.
             Do not include any other text or formatting in your response.`
           },
           {
