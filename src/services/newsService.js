@@ -40,26 +40,42 @@ class NewsService {
 
   async getArticleDetails(urls) {
     try {
-      // Fetch full details for selected articles
-      const detailedArticles = await Promise.all(
-        urls.map(async (url) => {
-          const response = await this.newsapi.v2.everything({
-            q: url,
-            language: 'en',
-            pageSize: 1
-          });
-          return response.articles[0];
-        })
-      );
+      // Create a query that includes all URLs
+      const urlQueries = urls.map(url => {
+        // Extract domain and relevant parts from URL for better searching
+        const urlObj = new URL(url);
+        const searchTerms = urlObj.pathname.split('/').filter(Boolean).join(' ');
+        return `url:"${url}" OR "${searchTerms}"`;
+      });
 
-      return detailedArticles.map(article => ({
-        title: article.title,
-        description: article.description,
-        content: article.content,
-        url: article.url,
-        source: article.source.name,
-        publishedAt: article.publishedAt
-      }));
+      // Fetch articles in batches to avoid rate limits
+      const articles = await this.newsapi.v2.everything({
+        q: urlQueries.join(' OR '),
+        language: 'en',
+        pageSize: urls.length
+      });
+
+      if (!articles.articles?.length) {
+        throw new Error('No articles found for the given URLs');
+      }
+
+      // Match returned articles with requested URLs
+      const detailedArticles = articles.articles
+        .filter(article => urls.includes(article.url))
+        .map(article => ({
+          title: article.title,
+          description: article.description || '',
+          content: article.content || '',
+          url: article.url,
+          source: article.source?.name || 'Unknown',
+          publishedAt: article.publishedAt
+        }));
+
+      if (!detailedArticles.length) {
+        throw new Error('Could not find matching articles');
+      }
+
+      return detailedArticles;
     } catch (error) {
       console.error('Error fetching article details:', error);
       throw error;
