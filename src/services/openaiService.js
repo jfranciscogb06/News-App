@@ -54,7 +54,7 @@ class OpenAIService {
   async filterRelevantArticles(symbol, articles) {
     try {
       const analysis = await this.openai.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
@@ -112,7 +112,7 @@ class OpenAIService {
       console.log(`Starting future prediction analysis for ${symbol} with ${articles.length} articles`);
 
       const analysis = await this.openai.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
