@@ -10,7 +10,7 @@ class OpenAIService {
 
   async filterRelevantArticles(symbol, articles) {
     const analysis = await this.openai.chat.completions.create({
-      model: "gpt-4",
+      model: "gpt-4-0125-preview",
       messages: [
         {
           role: "system",
@@ -45,7 +45,7 @@ class OpenAIService {
 
   async analyzeArticles(symbol, articles) {
     const analysis = await this.openai.chat.completions.create({
-      model: "gpt-4",
+      model: "gpt-4-0125-preview",
       messages: [
         {
           role: "system",
