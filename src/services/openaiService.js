@@ -58,21 +58,21 @@ class OpenAIService {
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select the most relevant ones that could impact stock price.
+            content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select the most relevant ones that could impact future stock performance.
 
             Select articles that:
-            - Indicate significant company developments
-            - Suggest market-moving news
-            - Represent unique events (avoid duplicates)
-            - Cover different timeframes (7 days to 6 months impact)
+            - Indicate upcoming company developments or plans
+            - Suggest potential market-moving events
+            - Reveal industry trends or market shifts that could affect the stock
+            - Discuss future predictions, forecasts, or analyst expectations
 
             You must return a valid JSON object exactly in this format, with no additional text or formatting:
             {
               "selected_articles": {
-                "7days": [<urls>],
-                "1month": [<urls>],
-                "3months": [<urls>],
-                "6months": [<urls>]
+                "7days": [<urls of articles relevant to 7-day predictions>],
+                "1month": [<urls of articles relevant to 1-month predictions>],
+                "3months": [<urls of articles relevant to 3-month predictions>],
+                "6months": [<urls of articles relevant to 6-month predictions>]
               }
             }`
           },
@@ -109,32 +109,38 @@ class OpenAIService {
 
   async analyzeArticles(symbol, articles) {
     try {
-      console.log(`Starting analysis for ${symbol} with ${articles.length} articles`);
+      console.log(`Starting future prediction analysis for ${symbol} with ${articles.length} articles`);
 
       const analysis = await this.openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert. Analyze these articles about ${symbol} stock and return ONLY a JSON object in this exact format:
+            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes. Return ONLY a JSON object in this exact format:
             {
               "7days": {
-                "sentiment": <number between -100 and 100>,
-                "summary": <string>,
-                "price_drivers": ["string1", "string2", ...],
+                "sentiment": <predicted sentiment score between -100 and 100>,
+                "summary": <brief prediction of what might happen in next 7 days>,
+                "price_drivers": ["potential future event 1", "potential future event 2", ...],
                 "key_articles": [
                   {
                     "title": "string",
-                    "impact": "string",
+                    "predicted_impact": "string describing potential future impact",
                     "confidence": "high" | "medium" | "low",
-                    "potential_price_effect": "string"
+                    "potential_price_effect": "predicted price movement and reasoning"
                   }
                 ]
               },
-              "1month": <same structure as 7days>,
-              "3months": <same structure as 7days>,
-              "6months": <same structure as 7days>
+              "1month": <same structure as 7days, but for 1-month predictions>,
+              "3months": <same structure as 7days, but for 3-month predictions>,
+              "6months": <same structure as 7days, but for 6-month predictions>
             }
+            
+            Focus on:
+            - Future events and developments
+            - Upcoming catalysts or risks
+            - Market trends that could affect the stock
+            - Potential scenarios and their likelihood
             
             Do not include any other text or formatting in your response.`
           },
