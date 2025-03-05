@@ -52,6 +52,53 @@ class OpenAIService {
     return true;
   }
 
+  async selectRelevantArticles(symbol, articles) {
+    try {
+      const analysis = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `You are a financial analyst expert. Review these articles about ${symbol} stock and select only the most relevant and unique ones that could impact future stock performance.
+
+            Select articles that:
+            - Are specifically about ${symbol} or directly impact it
+            - Contain unique information (avoid duplicates)
+            - Have potential impact on stock price
+            - Include future predictions or developments
+
+            For each article, explain in one sentence why it's relevant.
+            
+            Return a JSON array of selected articles with explanations:
+            {
+              "selected_articles": [
+                {
+                  "title": "<article title>",
+                  "url": "<article url>",
+                  "relevance": "<one sentence explanation>"
+                }
+              ]
+            }`
+          },
+          {
+            role: "user",
+            content: JSON.stringify(articles)
+          }
+        ],
+        temperature: 0.5,
+        max_tokens: 2000
+      });
+
+      const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
+      return articles.filter(article => 
+        result.selected_articles.some(selected => selected.url === article.url)
+      );
+    } catch (error) {
+      console.error('Error selecting relevant articles:', error);
+      throw error;
+    }
+  }
+
   async filterRelevantArticles(symbol, articles) {
     try {
       const analysis = await this.openai.chat.completions.create({

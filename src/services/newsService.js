@@ -1,221 +1,130 @@
 const NewsAPI = require('newsapi');
 const yahooFinance = require('yahoo-finance2').default;
 const config = require('../config/config');
+const openaiService = require('./openaiService');
 
 class NewsService {
   constructor() {
     this.newsapi = new NewsAPI(config.newsapi.apiKey);
   }
 
-  async getArticleTitles(symbol) {
+  async getNewsApiArticles(symbol) {
     try {
-      console.log(`Fetching news for ${symbol}...`);
-
-      // Get articles from both sources in parallel
-      const [recentNews, olderNews, quote, search] = await Promise.all([
-        // NewsAPI recent articles
+      console.log('Fetching NewsAPI articles...');
+      
+      const [recentNews, olderNews] = await Promise.all([
         this.newsapi.v2.everything({
-          q: `${symbol} stock OR (${symbol} company)`,
+          q: symbol,
           language: 'en',
           sortBy: 'publishedAt',
           pageSize: 100,
-          searchIn: 'title,description',
           from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-        }).catch(err => {
-          console.error('Error fetching recent NewsAPI articles:', err);
-          return { articles: [] };
         }),
-        // NewsAPI older articles
         this.newsapi.v2.everything({
-          q: `${symbol} stock OR (${symbol} company)`,
+          q: symbol,
           language: 'en',
           sortBy: 'relevancy',
           pageSize: 100,
-          searchIn: 'title,description',
           from: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString(),
           to: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-        }).catch(err => {
-          console.error('Error fetching older NewsAPI articles:', err);
-          return { articles: [] };
-        }),
-        // Yahoo Finance quote (for validation)
-        yahooFinance.quoteSummary(symbol, {
-          modules: ['price']
-        }).catch(err => {
-          console.error('Error fetching Yahoo quote:', err);
-          return null;
-        }),
-        // Yahoo Finance news
-        yahooFinance.search(symbol).catch(err => {
-          console.error('Error fetching Yahoo news:', err);
-          return { news: [] };
         })
       ]);
 
-      console.log('Raw NewsAPI recent articles count:', recentNews.articles?.length || 0);
-      console.log('Raw NewsAPI older articles count:', olderNews.articles?.length || 0);
-      console.log('Raw Yahoo Finance news count:', search?.news?.length || 0);
-
-      // Process NewsAPI articles with better filtering
-      const newsApiArticles = [...(recentNews.articles || []), ...(olderNews.articles || [])]
-        .filter(article => {
-          const titleLower = article.title?.toLowerCase() || '';
-          const descLower = article.description?.toLowerCase() || '';
-          const symbolLower = symbol.toLowerCase();
-
-          // Ensure article is relevant to the company
-          return (titleLower.includes(symbolLower) || descLower.includes(symbolLower)) &&
-            // Exclude articles that are too generic
-            !titleLower.includes('stock market') &&
-            !titleLower.includes('stocks to watch');
-        })
-        .map(article => ({
-          title: article.title,
-          publishedAt: article.publishedAt,
-          url: article.url,
-          source: article.source?.name || 'NewsAPI',
-          description: article.description,
-          provider: 'NewsAPI'
-        }));
-
-      // Process Yahoo Finance articles
-      const yahooArticles = (search?.news || []).map(article => ({
+      const articles = [...recentNews.articles, ...olderNews.articles].map(article => ({
         title: article.title,
-        publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
-        url: article.link,
-        source: 'Yahoo Finance',
         description: article.description,
-        provider: 'Yahoo Finance'
+        url: article.url,
+        publishedAt: article.publishedAt,
+        source: article.source?.name || 'NewsAPI',
+        provider: 'NewsAPI'
       }));
 
-      // Combine and deduplicate articles
-      const allArticles = [...newsApiArticles, ...yahooArticles];
-      const uniqueArticles = this.deduplicateArticles(allArticles);
-
-      // Log article counts for debugging
-      console.log(`Filtered NewsAPI articles: ${newsApiArticles.length}`);
-      console.log(`Filtered Yahoo articles: ${yahooArticles.length}`);
-      console.log(`Final unique articles: ${uniqueArticles.length}`);
-
-      return uniqueArticles;
+      console.log(`Found ${articles.length} NewsAPI articles`);
+      return articles;
     } catch (error) {
-      console.error('Error fetching news titles:', error);
-      throw error;
+      console.error('Error fetching NewsAPI articles:', error);
+      return [];
     }
   }
 
-  deduplicateArticles(articles) {
-    const seen = new Map();
-    return articles.filter(article => {
-      // Normalize the title and description for comparison
-      const title = article.title?.toLowerCase().trim() || '';
-      const desc = article.description?.toLowerCase().trim() || '';
+  async getYahooFinanceArticles(symbol) {
+    try {
+      console.log('Fetching Yahoo Finance articles...');
       
-      // Create multiple keys for better deduplication
-      const titleKey = title;
-      const urlKey = article.url?.toLowerCase();
-      const contentKey = `${title}-${desc.slice(0, 100)}`;
+      const search = await yahooFinance.search(symbol);
+      const articles = (search?.news || []).map(article => ({
+        title: article.title,
+        description: article.description,
+        url: article.link,
+        publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
+        source: 'Yahoo Finance',
+        provider: 'Yahoo Finance'
+      }));
 
-      // Check if we've seen this article before
-      if (seen.has(titleKey) || seen.has(urlKey) || seen.has(contentKey)) {
-        return false;
-      }
-
-      // Mark this article as seen
-      seen.set(titleKey, true);
-      seen.set(urlKey, true);
-      seen.set(contentKey, true);
-      return true;
-    });
+      console.log(`Found ${articles.length} Yahoo Finance articles`);
+      return articles;
+    } catch (error) {
+      console.error('Error fetching Yahoo Finance articles:', error);
+      return [];
+    }
   }
 
-  async getArticleDetails(urls) {
+  async getArticleDetails(url, article) {
+    if (article.provider === 'Yahoo Finance') {
+      return {
+        ...article,
+        content: article.description
+      };
+    }
+
     try {
-      const allArticles = [];
+      const response = await this.newsapi.v2.everything({
+        q: `url:"${url}"`,
+        language: 'en'
+      });
 
-      for (const url of urls) {
-        try {
-          let articleDetails;
-
-          if (url.includes('finance.yahoo.com')) {
-            articleDetails = {
-              title: url.title || '',
-              description: url.description || '',
-              content: url.description || '',
-              url: url.url,
-              source: 'Yahoo Finance',
-              publishedAt: url.publishedAt,
-              provider: 'Yahoo Finance'
-            };
-          } else {
-            // Existing NewsAPI logic
-            const urlObj = new URL(url);
-            const domain = urlObj.hostname.replace('www.', '');
-            
-            const searchStrategies = [
-              {
-                q: `url:"${url}"`,
-                pageSize: 10
-              },
-              {
-                domains: domain,
-                pageSize: 100,
-                sortBy: 'relevancy'
-              },
-              {
-                domains: domain,
-                pageSize: 100,
-                sortBy: 'publishedAt'
-              }
-            ];
-
-            for (const strategy of searchStrategies) {
-              try {
-                const response = await this.newsapi.v2.everything({
-                  ...strategy,
-                  language: 'en'
-                });
-
-                if (response.articles?.length) {
-                  const matchedArticle = response.articles.find(article => 
-                    article.url === url || 
-                    article.url.includes(urlObj.pathname)
-                  );
-
-                  if (matchedArticle) {
-                    articleDetails = {
-                      title: matchedArticle.title || '',
-                      description: matchedArticle.description || '',
-                      content: matchedArticle.content || '',
-                      url: matchedArticle.url,
-                      source: matchedArticle.source?.name || 'Unknown',
-                      publishedAt: matchedArticle.publishedAt,
-                      provider: 'NewsAPI'
-                    };
-                    break;
-                  }
-                }
-
-                await new Promise(resolve => setTimeout(resolve, 200));
-              } catch (strategyError) {
-                console.error('Strategy failed:', strategyError);
-                continue;
-              }
-            }
-          }
-
-          if (articleDetails) {
-            allArticles.push(articleDetails);
-          }
-        } catch (urlError) {
-          console.error('Error processing URL:', urlError);
-          continue;
-        }
+      const matchedArticle = response.articles?.[0];
+      if (matchedArticle) {
+        return {
+          ...article,
+          content: matchedArticle.content || matchedArticle.description
+        };
       }
-
-      return allArticles;
+      
+      return article;
     } catch (error) {
       console.error('Error fetching article details:', error);
+      return article;
+    }
+  }
+
+  async collectAndAnalyzeNews(symbol) {
+    try {
+      // 1. Get NewsAPI articles
+      const newsApiArticles = await this.getNewsApiArticles(symbol);
+      
+      // 2. Let OpenAI select unique and relevant articles
+      const selectedNewsApiArticles = await openaiService.selectRelevantArticles(symbol, newsApiArticles);
+      console.log(`Selected ${selectedNewsApiArticles.length} relevant NewsAPI articles`);
+
+      // 3. Get Yahoo Finance articles
+      const yahooArticles = await this.getYahooFinanceArticles(symbol);
+      
+      // 4. Combine all articles and get full content
+      const allArticles = [...selectedNewsApiArticles, ...yahooArticles];
+      console.log(`Total articles before final selection: ${allArticles.length}`);
+
+      // 5. Get full content for selected articles
+      const articlesWithContent = await Promise.all(
+        allArticles.map(article => this.getArticleDetails(article.url, article))
+      );
+
+      // 6. Final analysis of all unique articles
+      const analysis = await openaiService.analyzeArticles(symbol, articlesWithContent);
+      
+      return analysis;
+    } catch (error) {
+      console.error('Error in collectAndAnalyzeNews:', error);
       throw error;
     }
   }
