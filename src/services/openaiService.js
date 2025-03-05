@@ -8,44 +8,74 @@ class OpenAIService {
     });
   }
 
-  async filterRelevantArticles(symbol, articles) {
-    const analysis = await this.openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select the most relevant ones that could impact stock price.
-
-          Select articles that:
-          - Indicate significant company developments
-          - Suggest market-moving news
-          - Represent unique events (avoid duplicates)
-          - Cover different timeframes (7 days to 6 months impact)
-
-          Return a JSON object in this format:
-          {
-            "selected_articles": {
-              "7days": [<urls>],
-              "1month": [<urls>],
-              "3months": [<urls>],
-              "6months": [<urls>]
-            }
-          }`
-        },
-        {
-          role: "user",
-          content: JSON.stringify(articles)
-        }
-      ],
-      temperature: 0.5,
-      max_tokens: 2000
-    });
-
+  // Helper to clean and parse OpenAI responses
+  cleanAndParseResponse(response) {
     try {
-      return JSON.parse(analysis.choices[0].message.content);
+      // Remove any markdown formatting
+      let cleaned = response.replace(/```json\n?|\n?```/g, '');
+      // Remove any leading/trailing whitespace
+      cleaned = cleaned.trim();
+      // Parse the cleaned JSON
+      return JSON.parse(cleaned);
     } catch (error) {
-      console.error('Error parsing OpenAI response:', error);
-      throw new Error('Failed to parse article filtering response');
+      console.error('Raw response:', response);
+      throw new Error('Failed to parse OpenAI response');
+    }
+  }
+
+  async filterRelevantArticles(symbol, articles) {
+    try {
+      const analysis = await this.openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select the most relevant ones that could impact stock price.
+
+            Select articles that:
+            - Indicate significant company developments
+            - Suggest market-moving news
+            - Represent unique events (avoid duplicates)
+            - Cover different timeframes (7 days to 6 months impact)
+
+            You must return a valid JSON object exactly in this format, with no additional text or formatting:
+            {
+              "selected_articles": {
+                "7days": [<urls>],
+                "1month": [<urls>],
+                "3months": [<urls>],
+                "6months": [<urls>]
+              }
+            }`
+          },
+          {
+            role: "user",
+            content: JSON.stringify(articles)
+          }
+        ],
+        temperature: 0.5,
+        max_tokens: 2000
+      });
+
+      if (!analysis.choices?.[0]?.message?.content) {
+        throw new Error('Invalid response from OpenAI');
+      }
+
+      const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
+
+      // Validate the response structure
+      if (!result.selected_articles || 
+          !Array.isArray(result.selected_articles["7days"]) ||
+          !Array.isArray(result.selected_articles["1month"]) ||
+          !Array.isArray(result.selected_articles["3months"]) ||
+          !Array.isArray(result.selected_articles["6months"])) {
+        throw new Error('Invalid response structure from OpenAI');
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error in filterRelevantArticles:', error);
+      throw new Error(`Failed to filter articles: ${error.message}`);
     }
   }
 

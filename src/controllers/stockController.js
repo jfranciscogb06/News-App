@@ -10,31 +10,38 @@ class StockController {
       const articleTitles = await newsService.getArticleTitles(symbol);
       
       if (!articleTitles.length) {
-        return res.status(404).json({ error: 'No articles found for this stock' });
+        return res.status(404).json({ 
+          error: 'No articles found',
+          details: 'Could not find any news articles for this stock symbol'
+        });
       }
 
       // Step 2: Filter relevant articles using OpenAI
-      const relevantArticles = await openaiService.filterRelevantArticles(symbol, articleTitles);
-
-      // Validate the response structure
-      if (!relevantArticles?.selected_articles) {
-        throw new Error('Invalid response format from article filtering');
+      let relevantArticles;
+      try {
+        relevantArticles = await openaiService.filterRelevantArticles(symbol, articleTitles);
+      } catch (filterError) {
+        console.error('Article filtering error:', filterError);
+        return res.status(500).json({
+          error: 'Analysis error',
+          details: 'Failed to filter relevant articles',
+          message: filterError.message
+        });
       }
 
       // Step 3: Get full content for selected articles
       const selectedUrls = Object.values(relevantArticles.selected_articles)
         .flat()
-        .filter(Boolean); // Remove any null/undefined values
+        .filter(Boolean);
 
       if (!selectedUrls.length) {
-        return res.status(404).json({ error: 'No relevant articles found for analysis' });
+        return res.status(404).json({
+          error: 'No relevant articles',
+          details: 'No articles were found to be relevant for analysis'
+        });
       }
 
       const detailedArticles = await newsService.getArticleDetails(selectedUrls);
-
-      if (!detailedArticles.length) {
-        return res.status(404).json({ error: 'Could not fetch article details' });
-      }
 
       // Step 4: Perform detailed analysis
       const analysis = await openaiService.analyzeArticles(symbol, detailedArticles);
