@@ -6,9 +6,12 @@ module.exports = {
     apiKey: process.env.OPENAI_API_KEY
   },
   newsapi: {
-    apiKey: process.env.NEWS_API_KEY
+    apiKey: process.env.NEWSAPI_API_KEY
   },
   polygon: {
-    apiKey: process.env.POLYGON_API_KEY
+    apiKey: process.env.POLYGONIO_API_KEY
+  },
+  database: {
+    url: process.env.DATABASE_URL
   }
 }; 
