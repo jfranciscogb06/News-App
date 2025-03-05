@@ -1,5 +1,5 @@
 const NewsAPI = require('newsapi');
-const YahooFinance = require('yahoo-finance2').default;
+const yahooFinance = require('yahoo-finance2').default;
 const config = require('../config/config');
 
 class NewsService {
@@ -29,9 +29,15 @@ class NewsService {
       ]);
 
       // Get Yahoo Finance news
-      const yahooQuote = await YahooFinance.quoteSummary(symbol, {
-        modules: ['assetProfile', 'news']
-      });
+      const [quote, search] = await Promise.all([
+        yahooFinance.quoteSummary(symbol, {
+          modules: ['price']
+        }),
+        yahooFinance.search(symbol, {
+          newsCount: 100,
+          enableFuzzyQuery: false
+        })
+      ]);
 
       const newsApiArticles = [...recentNews.articles, ...olderNews.articles].map(article => ({
         title: article.title,
@@ -42,7 +48,7 @@ class NewsService {
         description: article.description
       }));
 
-      const yahooArticles = (yahooQuote.news || []).map(article => ({
+      const yahooArticles = (search.news || []).map(article => ({
         title: article.title,
         publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
         url: article.link,
