@@ -20,7 +20,7 @@ class StockController {
         return res.status(404).json({ error: 'No articles found for this stock' });
       }
 
-      // Add stock details to OpenAI analysis context
+      // Get AI analysis
       const analysis = await openaiService.analyzeArticles(symbol, articles, stockDetails, stockPrices);
 
       const result = {
@@ -28,7 +28,12 @@ class StockController {
         timestamp: new Date(),
         stockDetails,
         latestPrice: stockPrices?.[0],
-        analysis,
+        timeframes: {
+          sevenDays: analysis["7days"],
+          oneMonth: analysis["1month"],
+          threeMonths: analysis["3months"],
+          sixMonths: analysis["6months"]
+        }
       };
 
       res.json(result);
