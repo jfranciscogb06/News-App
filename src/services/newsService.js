@@ -15,23 +15,22 @@ class NewsService {
           q: symbol,
           language: 'en',
           sortBy: 'publishedAt',
-          pageSize: 100, // Increased from 50
+          pageSize: 100,
           from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
         }),
         this.newsapi.v2.everything({
           q: symbol,
           language: 'en',
           sortBy: 'relevancy',
-          pageSize: 100, // Increased from 50
+          pageSize: 100,
           from: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString(),
           to: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
         })
       ]);
 
       // Get Yahoo Finance news
-      const yahooNews = await yahooFinance.search(symbol, {
-        newsCount: 100, // Get more Yahoo articles
-        enableFuzzyQuery: false
+      const yahooNews = await yahooFinance.quote(symbol, {
+        modules: ['news']
       });
 
       const newsApiArticles = [...recentNews.articles, ...olderNews.articles].map(article => ({
@@ -43,12 +42,12 @@ class NewsService {
         description: article.description
       }));
 
-      const yahooArticles = yahooNews.news.map(article => ({
+      const yahooArticles = (yahooNews.news || []).map(article => ({
         title: article.title,
-        publishedAt: article.providerPublishTime,
+        publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
         url: article.link,
         source: 'Yahoo Finance',
-        imageUrl: article.thumbnail?.resolutions?.[0]?.url,
+        imageUrl: article.thumbnail?.resolutions?.[0]?.url || null,
         description: article.description
       }));
 
@@ -76,21 +75,16 @@ class NewsService {
           let articleDetails;
 
           if (url.includes('finance.yahoo.com')) {
-            // Handle Yahoo Finance articles
-            const yahooSearch = await yahooFinance.search(url, {
-              newsCount: 1,
-              enableFuzzyQuery: false
-            });
-            const article = yahooSearch.news[0];
-            
+            // For Yahoo Finance articles, we'll use the data we already have
+            // since Yahoo's API doesn't provide a direct way to fetch by URL
             articleDetails = {
-              title: article.title,
-              description: article.description,
-              content: article.content || article.description,
-              url: article.link,
+              title: url.title || '',
+              description: url.description || '',
+              content: url.description || '',
+              url: url.url,
               source: 'Yahoo Finance',
-              publishedAt: article.providerPublishTime,
-              imageUrl: article.thumbnail?.resolutions?.[0]?.url
+              publishedAt: url.publishedAt,
+              imageUrl: url.imageUrl
             };
           } else {
             // Existing NewsAPI logic
@@ -99,18 +93,15 @@ class NewsService {
             
             // Try multiple search strategies
             const searchStrategies = [
-              // Strategy 1: Search by exact URL
               {
                 q: `url:"${url}"`,
                 pageSize: 10
               },
-              // Strategy 2: Search by domain and title keywords
               {
                 domains: domain,
                 pageSize: 100,
                 sortBy: 'relevancy'
               },
-              // Strategy 3: Search by domain only
               {
                 domains: domain,
                 pageSize: 100,
@@ -126,7 +117,6 @@ class NewsService {
                 });
 
                 if (response.articles?.length) {
-                  // Find the matching article
                   const matchedArticle = response.articles.find(article => 
                     article.url === url || 
                     article.url.includes(urlObj.pathname)
@@ -142,15 +132,14 @@ class NewsService {
                       publishedAt: matchedArticle.publishedAt,
                       imageUrl: matchedArticle.urlToImage
                     };
-                    break; // Found the article, move to next URL
+                    break;
                   }
                 }
 
-                // Add delay between requests
                 await new Promise(resolve => setTimeout(resolve, 200));
               } catch (strategyError) {
                 console.error('Strategy failed:', strategyError);
-                continue; // Try next strategy
+                continue;
               }
             }
           }
