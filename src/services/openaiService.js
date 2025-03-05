@@ -8,18 +8,31 @@ class OpenAIService {
     });
   }
 
-  // Helper to clean and parse OpenAI responses
-  cleanAndParseResponse(response) {
+  cleanAndParseResponse(response, context = '') {
     try {
+      // Log the raw response for debugging
+      console.log(`Raw ${context} response:`, response);
+
       // Remove any markdown formatting
       let cleaned = response.replace(/```json\n?|\n?```/g, '');
+      
       // Remove any leading/trailing whitespace
       cleaned = cleaned.trim();
-      // Parse the cleaned JSON
-      return JSON.parse(cleaned);
+      
+      // Log the cleaned response
+      console.log(`Cleaned ${context} response:`, cleaned);
+
+      // Try to parse the JSON
+      const parsed = JSON.parse(cleaned);
+      
+      // Log successful parsing
+      console.log(`Successfully parsed ${context} response`);
+      
+      return parsed;
     } catch (error) {
+      console.error(`Error parsing ${context} response:`, error);
       console.error('Raw response:', response);
-      throw new Error('Failed to parse OpenAI response');
+      throw new Error(`Failed to parse ${context} response: ${error.message}`);
     }
   }
 
@@ -96,46 +109,34 @@ class OpenAIService {
 
   async analyzeArticles(symbol, articles) {
     try {
+      console.log(`Starting analysis for ${symbol} with ${articles.length} articles`);
+
       const analysis = await this.openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert specializing in predicting market movements based on news analysis. For ${symbol} stock:
-
-            1. Analyze all provided articles and identify key market-moving events, trends, and potential future catalysts.
-            2. Group related articles together and extract the most significant insights that could affect stock price.
-            3. For each timeframe, identify patterns and potential market reactions.
-
-            Focus on:
-            - Revenue/earnings impacts
-            - Market share changes
-            - Industry trends
-            - Competitive positioning
-            - Product launches/developments
-            - Management changes
-            - Regulatory impacts
-            - Market sentiment shifts
-
-            You must return a valid JSON object exactly in this format, with no additional text or formatting:
+            content: `You are a financial analyst expert. Analyze these articles about ${symbol} stock and return ONLY a JSON object in this exact format:
             {
               "7days": {
-                "sentiment": <number -100 to 100>,
-                "summary": <string: comprehensive market outlook>,
-                "price_drivers": [<array of strings: key factors affecting price>],
+                "sentiment": <number between -100 and 100>,
+                "summary": <string>,
+                "price_drivers": ["string1", "string2", ...],
                 "key_articles": [
                   {
-                    "title": <string: article title>,
-                    "impact": <string: detailed analysis of price impact>,
-                    "confidence": <string: "high"/"medium"/"low">,
-                    "potential_price_effect": <string: estimated % change>
+                    "title": "string",
+                    "impact": "string",
+                    "confidence": "high" | "medium" | "low",
+                    "potential_price_effect": "string"
                   }
                 ]
               },
-              "1month": <same structure>,
-              "3months": <same structure>,
-              "6months": <same structure>
-            }`
+              "1month": <same structure as 7days>,
+              "3months": <same structure as 7days>,
+              "6months": <same structure as 7days>
+            }
+            
+            Do not include any other text or formatting in your response.`
           },
           {
             role: "user",
@@ -147,18 +148,19 @@ class OpenAIService {
       });
 
       if (!analysis.choices?.[0]?.message?.content) {
-        throw new Error('Invalid response from OpenAI');
+        throw new Error('Empty response from OpenAI');
       }
 
-      const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
-      
-      // Validate the response structure
+      const result = this.cleanAndParseResponse(analysis.choices[0].message.content, 'analysis');
+
+      console.log('Validating analysis structure...');
       this.validateAnalysisStructure(result);
+      console.log('Analysis structure validated successfully');
 
       return result;
     } catch (error) {
       console.error('Error in analyzeArticles:', error);
-      throw new Error(`Failed to analyze articles: ${error.message}`);
+      throw new Error(`Analysis failed: ${error.message}`);
     }
   }
 }
