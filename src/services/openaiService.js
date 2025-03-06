@@ -60,39 +60,43 @@ class OpenAIService {
 
   async selectRelevantArticles(symbol, articles) {
     try {
+      // Extract just the titles for initial review
+      const articleTitles = articles.map(article => ({
+        title: article.title,
+        url: article.url
+      }));
+
       const analysis = await this.openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert. Review these articles about ${symbol} stock and select only the most relevant and unique ones that could impact future stock performance.
+            content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select only the most relevant ones that could impact future stock performance.
 
-            Select articles that:
-            - Are specifically about ${symbol} or directly impact it
-            - Contain unique information (avoid duplicates)
-            - Have potential impact on stock price
-            - Include future predictions or developments
+            Select titles that:
+            - Are specifically about or closely related to ${symbol} or directly impact it
+            - Suggest developments or events
+            - Indicate potential stock price impact
+            - Discuss future predictions or plans
 
-            For each article, explain in one sentence why it's relevant.
-            
-            Return a JSON array of selected articles with explanations:
+            Return a JSON array of selected articles:
             {
               "selected_articles": [
                 {
-                  "title": "<article title>",
                   "url": "<article url>",
                   "relevance": "<one sentence explanation>"
                 }
               ]
-            }`
+            }
+
+            Only analyze the titles. Do not include any other text in your response.`
           },
           {
             role: "user",
-            content: JSON.stringify(articles)
+            content: JSON.stringify(articleTitles)
           }
         ],
-        temperature: 0.5,
-        max_tokens: 2000
+        temperature: 0.5
       });
 
       const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
