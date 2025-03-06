@@ -58,7 +58,7 @@ class OpenAIService {
           - Provide analyst insights or predictions
           - Contain concrete data or specific developments
           
-          Structure the response as a JSON object with the following format:
+          Return ONLY a valid JSON object with this exact format:
           {
             "7days": {
               "sentiment_score": number,
@@ -91,7 +91,8 @@ class OpenAIService {
           2. Sentiment scores accurately reflect the cumulative impact of ALL information
           3. Analysis connects related developments across different articles
           4. Clear explanation of how each article contributes to the overall sentiment
-          5. Comprehensive coverage of both positive and negative factors`
+          5. Comprehensive coverage of both positive and negative factors
+          6. Response is a valid JSON object with no trailing commas or formatting issues`
         },
         {
           role: "user",
@@ -101,8 +102,7 @@ class OpenAIService {
           })
         }
       ],
-      temperature: 0.5,
-      response_format: { type: "json_object" }
+      temperature: 0.5
     });
 
     return JSON.parse(analysis.choices[0].message.content);
