@@ -1,17 +1,10 @@
 const newsService = require('../services/newsService');
 const openaiService = require('../services/openaiService');
-const polygonService = require('../services/polygonService');
 
 class StockController {
   async analyzeStock(req, res, next) {
     try {
       const { symbol } = req.params;
-      
-      // Get stock details and prices from Polygon.io
-      const [stockDetails, stockPrices] = await Promise.all([
-        polygonService.getStockDetails(symbol),
-        polygonService.getDailyPrices(symbol)
-      ]);
       
       // Get news articles
       const articles = await newsService.getStockNews(symbol);
@@ -21,13 +14,11 @@ class StockController {
       }
 
       // Get AI analysis
-      const analysis = await openaiService.analyzeArticles(symbol, articles, stockDetails, stockPrices);
+      const analysis = await openaiService.analyzeArticles(symbol, articles);
 
       const result = {
         symbol,
         timestamp: new Date(),
-        stockDetails,
-        latestPrice: stockPrices?.[0],
         timeframes: {
           sevenDays: analysis["7days"],
           oneMonth: analysis["1month"],

@@ -8,7 +8,7 @@ class OpenAIService {
     });
   }
 
-  async analyzeArticles(symbol, articles, stockDetails, stockPrices) {
+  async analyzeArticles(symbol, articles) {
     const analysis = await this.openai.chat.completions.create({
       model: "gpt-4",
       messages: [
@@ -39,7 +39,6 @@ class OpenAIService {
              - Potential catalysts that could change the sentiment
 
           2. A thorough market outlook analysis including:
-             - Technical analysis based on stock prices
              - Industry trends and competitive position
              - Market conditions and macroeconomic factors
              - Risk factors and potential challenges
@@ -98,8 +97,6 @@ class OpenAIService {
           role: "user",
           content: JSON.stringify({
             articles,
-            stockDetails,
-            stockPrices,
             articleCount: articles.length
           })
         }
