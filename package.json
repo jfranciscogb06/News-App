@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@polygon.io/client-js": "^7.4.0",
-    "axios": "^1.6.7",
+    "axios": "^1.8.1",
+    "cheerio": "^1.0.0",
     "dotenv": "^16.4.1",
     "express": "^4.18.2",
     "newsapi": "^2.4.1",
