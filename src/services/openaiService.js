@@ -102,7 +102,6 @@ class OpenAIService {
         }
       ],
       temperature: 0.5,
-      max_tokens: 4000,
       response_format: { type: "json_object" }
     });
 
