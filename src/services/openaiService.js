@@ -8,104 +8,256 @@ class OpenAIService {
     });
   }
 
-  async analyzeArticles(symbol, articles) {
-    const analysis = await this.openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [
-        {
-          role: "system",
-          content: `You are a financial analyst expert. Analyze the provided news articles about ${symbol} stock and structure your analysis in the following format for each timeframe (7 days, 1 month, 3 months, 6 months).
+  cleanAndParseResponse(response, context = '') {
+    try {
+      // Log the raw response for debugging
+      console.log(`Raw ${context} response:`, response);
 
-          SENTIMENT SCORE GUIDELINES:
-          - Score Range: -100 (EXTREMELY BEARISH) to +100 (EXTREMELY BULLISH), with 0 being NEUTRAL
-          - Consider ALL available information when calculating sentiment
-          - Scoring Framework:
-            * -100 to -75: Extremely Bearish (severe negative catalysts, major problems)
-            * -74 to -50: Very Bearish (significant challenges, negative outlook)
-            * -49 to -25: Moderately Bearish (concerning issues, but not severe)
-            * -24 to -1: Slightly Bearish (minor concerns or uncertainties)
-            * 0: Neutral (balanced positive and negative factors)
-            * +1 to +24: Slightly Bullish (minor positive indicators)
-            * +25 to +49: Moderately Bullish (positive developments)
-            * +50 to +74: Very Bullish (strong positive catalysts)
-            * +75 to +100: Extremely Bullish (exceptional positive developments)
+      // Remove any markdown formatting and extra whitespace
+      let cleaned = response.replace(/```json\n?|\n?```/g, '')
+        .replace(/\n\s+/g, '\n')  // Remove extra whitespace at start of lines
+        .replace(/,\s*([}\]])/g, '$1')  // Remove trailing commas
+        .replace(/\s+/g, ' ')  // Normalize whitespace
+        .trim();
+      
+      // Log the cleaned response
+      console.log(`Cleaned ${context} response:`, cleaned);
 
-          For each timeframe, provide:
-          1. A detailed sentiment score analysis including:
-             - The numerical score (-100 to +100)
-             - Comprehensive explanation of the score
-             - Key factors that influenced the score
-             - Confidence level in the sentiment assessment
-             - Potential catalysts that could change the sentiment
+      // Try to parse the JSON
+      const parsed = JSON.parse(cleaned);
+      
+      // Log successful parsing
+      console.log(`Successfully parsed ${context} response`);
+      
+      return parsed;
+    } catch (error) {
+      console.error(`Error parsing ${context} response:`, error);
+      console.error('Raw response:', response);
+      throw new Error(`Failed to parse ${context} response: ${error.message}`);
+    }
+  }
 
-          2. A thorough market outlook analysis including:
-             - Industry trends and competitive position
-             - Market conditions and macroeconomic factors
-             - Risk factors and potential challenges
-             - Growth opportunities and catalysts
+  validateAnalysisStructure(data) {
+    const timeframes = ['7days', '1month', '3months', '6months'];
+    
+    for (const timeframe of timeframes) {
+      if (!data[timeframe] ||
+          typeof data[timeframe].sentiment !== 'number' ||
+          typeof data[timeframe].summary !== 'string' ||
+          !Array.isArray(data[timeframe].price_drivers) ||
+          !Array.isArray(data[timeframe].key_articles)) {
+        throw new Error(`Invalid structure for timeframe: ${timeframe}`);
+      }
 
-          3. Comprehensive article analysis (15-20 articles per timeframe):
-             - Article title and source
-             - Detailed significance explanation
-             - Specific impact on sentiment score (quantify the impact)
-             - How it relates to other articles/developments
-             - Reliability assessment of the information
-          
-          Focus on articles that:
-          - Directly relate to ${symbol}'s business performance
-          - Discuss market trends affecting the company
-          - Reveal upcoming events or developments
-          - Provide analyst insights or predictions
-          - Contain concrete data or specific developments
-          
-          Return ONLY a valid JSON object with this exact format:
+      // Validate that Yahoo Finance articles are included
+      const yahooArticles = data[timeframe].key_articles.filter(a => a.source === 'Yahoo Finance');
+      if (yahooArticles.length === 0) {
+        console.warn(`Warning: No Yahoo Finance articles in ${timeframe} timeframe`);
+      }
+    }
+    return true;
+  }
+
+  async selectRelevantArticles(symbol, articles) {
+    try {
+      // Extract just the titles for initial review
+      const articleTitles = articles.map(article => ({
+        title: article.title,
+        url: article.url
+      }));
+
+      const analysis = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
           {
-            "7days": {
-              "sentiment_score": number,
-              "sentiment_explanation": "string",
-              "sentiment_factors": ["string"],
-              "confidence_level": "high" | "medium" | "low",
-              "potential_sentiment_changes": ["string"],
-              "analysis": "string",
-              "market_conditions": "string",
-              "risk_factors": ["string"],
-              "growth_catalysts": ["string"],
-              "key_articles": [
+            role: "system",
+            content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select only the most relevant ones that could impact future stock performance.
+
+            Select titles that:
+            - Are specifically about or closely related to ${symbol} or directly impact it
+            - Suggest developments or events
+            - Indicate potential stock price impact
+            - Discuss future predictions or plans
+
+            Return a JSON array of selected articles:
+            {
+              "selected_articles": [
                 {
-                  "title": "string",
-                  "source": "string",
-                  "significance": "string",
-                  "sentiment_impact": "string",
-                  "reliability": "high" | "medium" | "low",
-                  "related_developments": ["string"]
+                  "url": "<article url>",
+                  "relevance": "<one sentence explanation>"
                 }
               ]
-            },
-            "1month": { same structure },
-            "3months": { same structure },
-            "6months": { same structure }
-          }
-          
-          Ensure:
-          1. ALL relevant articles are analyzed and factored into the sentiment
-          2. Sentiment scores accurately reflect the cumulative impact of ALL information
-          3. Analysis connects related developments across different articles
-          4. Clear explanation of how each article contributes to the overall sentiment
-          5. Comprehensive coverage of both positive and negative factors
-          6. Response is a valid JSON object with no trailing commas or formatting issues`
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            articles,
-            articleCount: articles.length
-          })
-        }
-      ],
-      temperature: 0.5
-    });
+            }
 
-    return JSON.parse(analysis.choices[0].message.content);
+            Only analyze the titles. Do not include any other text in your response.`
+          },
+          {
+            role: "user",
+            content: JSON.stringify(articleTitles)
+          }
+        ],
+        temperature: 0.5
+      });
+
+      const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
+      
+      // Filter the original articles based on selected URLs
+      return articles.filter(article => 
+        result.selected_articles.some(selected => selected.url === article.url)
+      );
+    } catch (error) {
+      console.error('Error selecting relevant articles:', error);
+      throw error;
+    }
+  }
+
+  async filterRelevantArticles(symbol, articles) {
+    try {
+      const analysis = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select the most relevant ones that could impact future stock performance.
+
+            Select articles that:
+            - Indicate upcoming company developments or plans
+            - Suggest potential market-moving events
+            - Reveal industry trends or market shifts that could affect the stock
+            - Discuss future predictions, forecasts, or analyst expectations
+
+            You must return a valid JSON object exactly in this format, with no additional text or formatting:
+            {
+              "selected_articles": {
+                "7days": [<urls of articles relevant to 7-day predictions>],
+                "1month": [<urls of articles relevant to 1-month predictions>],
+                "3months": [<urls of articles relevant to 3-month predictions>],
+                "6months": [<urls of articles relevant to 6-month predictions>]
+              }
+            }`
+          },
+          {
+            role: "user",
+            content: JSON.stringify(articles)
+          }
+        ],
+        temperature: 0.5,
+        max_tokens: 2000
+      });
+
+      if (!analysis.choices?.[0]?.message?.content) {
+        throw new Error('Invalid response from OpenAI');
+      }
+
+      const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
+
+      // Validate the response structure
+      if (!result.selected_articles || 
+          !Array.isArray(result.selected_articles["7days"]) ||
+          !Array.isArray(result.selected_articles["1month"]) ||
+          !Array.isArray(result.selected_articles["3months"]) ||
+          !Array.isArray(result.selected_articles["6months"])) {
+        throw new Error('Invalid response structure from OpenAI');
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error in filterRelevantArticles:', error);
+      throw new Error(`Failed to filter articles: ${error.message}`);
+    }
+  }
+
+  async analyzeArticles(symbol, articles) {
+    try {
+      console.log(`Starting future prediction analysis for ${symbol} with ${articles.length} articles`);
+
+      // Count Yahoo Finance articles
+      const yahooArticles = articles.filter(a => a.provider === 'Yahoo Finance');
+      console.log(`Analyzing ${yahooArticles.length} Yahoo Finance articles and ${articles.length - yahooArticles.length} NewsAPI articles`);
+
+      const analysis = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes. You must return a valid JSON object with no trailing commas and properly quoted strings. 
+
+            IMPORTANT: Ensure Yahoo Finance articles are well-represented in your analysis as they are typically highly relevant to stock performance.
+
+            Return ONLY a JSON object in this exact format:
+            {
+              "7days": {
+                "sentiment": <number between -100 and 100>,
+                "summary": "<prediction for next 7 days>",
+                "price_drivers": ["<event 1>", "<event 2>", ...],
+                "key_articles": [
+                  {
+                    "title": "<article title>",
+                    "url": "<article url>",
+                    "source": "<article source>",
+                    "predicted_impact": "<detailed impact analysis>",
+                    "confidence": "high" | "medium" | "low",
+                    "potential_price_effect": "<price prediction with reasoning>",
+                    "detailed_analysis": "<comprehensive analysis>"
+                  }
+                ]
+              },
+              "1month": <same structure as 7days>,
+              "3months": <same structure as 7days>,
+              "6months": <same structure as 7days>
+            }
+            
+            Focus on:
+            - Future events and developments
+            - Upcoming catalysts or risks
+            - Market trends that could affect the stock
+            - Potential scenarios and their likelihood
+            - Detailed reasoning for each prediction
+            - Long-term implications of current developments
+            
+            Requirements:
+            - Include Yahoo Finance articles in your analysis as they are highly relevant
+            - Provide comprehensive analysis for each timeframe and article
+            - Include at least 5 key - most relevant articles total for each timeframe when available
+            - Ensure all text fields are properly quoted and there are no trailing commas
+            
+            Do not include any other text or formatting in your response.`
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              articles,
+              yahooFinanceCount: yahooArticles.length,
+              totalCount: articles.length
+            })
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 8000
+      });
+
+      if (!analysis.choices?.[0]?.message?.content) {
+        throw new Error('Empty response from OpenAI');
+      }
+
+      const result = this.cleanAndParseResponse(analysis.choices[0].message.content, 'analysis');
+
+      // Validate Yahoo Finance representation
+      for (const timeframe of ['7days', '1month', '3months', '6months']) {
+        const timeframeArticles = result[timeframe].key_articles;
+        const yahooArticlesInTimeframe = timeframeArticles.filter(a => a.source === 'Yahoo Finance');
+        console.log(`${timeframe}: ${yahooArticlesInTimeframe.length} Yahoo Finance articles out of ${timeframeArticles.length} total`);
+      }
+
+      console.log('Validating analysis structure...');
+      this.validateAnalysisStructure(result);
+      console.log('Analysis structure validated successfully');
+
+      return result;
+    } catch (error) {
+      console.error('Error in analyzeArticles:', error);
+      throw new Error(`Analysis failed: ${error.message}`);
+    }
   }
 }
 
