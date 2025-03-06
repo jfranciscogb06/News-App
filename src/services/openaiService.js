@@ -100,6 +100,8 @@ class OpenAIService {
       });
 
       const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
+      
+      // Filter the original articles based on selected URLs
       return articles.filter(article => 
         result.selected_articles.some(selected => selected.url === article.url)
       );
@@ -214,10 +216,9 @@ class OpenAIService {
             - Long-term implications of current developments
             
             Requirements:
-            - Include ALL Yahoo Finance articles in your analysis as they are highly relevant
-            - For each timeframe, include at least 2 Yahoo Finance articles if available
+            - Include Yahoo Finance articles in your analysis as they are highly relevant
             - Provide comprehensive analysis for each timeframe and article
-            - Include at least 5 key articles total for each timeframe when available
+            - Include at least 5 key - most relevant articles total for each timeframe when available
             - Ensure all text fields are properly quoted and there are no trailing commas
             
             Do not include any other text or formatting in your response.`
