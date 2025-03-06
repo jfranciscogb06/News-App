@@ -45,17 +45,7 @@ class OpenAIService {
           typeof data[timeframe].sentiment !== 'number' ||
           typeof data[timeframe].summary !== 'string' ||
           !Array.isArray(data[timeframe].price_drivers) ||
-          !Array.isArray(data[timeframe].key_articles) ||
-          !data[timeframe].key_articles.every(article => 
-            article.title && 
-            article.url && 
-            article.source && 
-            article.publishedAt && // Validate publishedAt is present
-            article.predicted_impact && 
-            article.confidence && 
-            article.potential_price_effect && 
-            article.detailed_analysis
-          )) {
+          !Array.isArray(data[timeframe].key_articles)) {
         throw new Error(`Invalid structure for timeframe: ${timeframe}`);
       }
 
@@ -181,6 +171,10 @@ class OpenAIService {
     try {
       console.log(`Starting future prediction analysis for ${symbol} with ${articles.length} articles`);
 
+      // Count Yahoo Finance articles
+      const yahooArticles = articles.filter(a => a.provider === 'Yahoo Finance');
+      console.log(`Analyzing ${yahooArticles.length} Yahoo Finance articles and ${articles.length - yahooArticles.length} NewsAPI articles`);
+
       const analysis = await this.openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
@@ -188,21 +182,91 @@ class OpenAIService {
             role: "system",
             content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes.
 
-            IMPORTANT: You must return a complete JSON object with ALL required fields for EACH timeframe.
-            ALWAYS include the article's publishedAt date in the output.
+            SENTIMENT SCORING GUIDELINES - BE CONSERVATIVE AND STRICT:
+            
+            EXTREMELY BEARISH (-100 to -75):
+            - Major company crisis or scandal
+            - Bankruptcy risk or severe financial distress
+            - Loss of core business or critical market
+            - Multiple severe regulatory actions
+            - Industry-wide collapse affecting company
+
+            VERY BEARISH (-74 to -50):
+            - Significant earnings miss
+            - Major product failure or recall
+            - Loss of key customers/partnerships
+            - Serious legal/regulatory issues
+            - Substantial market share loss
+
+            MODERATELY BEARISH (-49 to -25):
+            - Missed earnings expectations
+            - Increased competition
+            - Minor legal/regulatory issues
+            - Declining market share
+            - Negative analyst coverage
+
+            SLIGHTLY BEARISH (-24 to -1):
+            - Minor setbacks
+            - Short-term challenges
+            - Cautious guidance
+            - Market uncertainty
+            - Mixed analyst opinions
+
+            NEUTRAL (0):
+            - Balanced positive and negative news
+            - No significant developments
+            - Stable market position
+            - Meeting expectations
+
+            SLIGHTLY BULLISH (+1 to +24):
+            - Minor positive developments
+            - Meeting expectations with optimism
+            - Favorable market conditions
+            - Positive analyst comments
+            - Small competitive advantages
+
+            MODERATELY BULLISH (+25 to +49):
+            - Strong earnings meet
+            - New product success
+            - Market share gains
+            - Positive industry trends
+            - Multiple analyst upgrades
+
+            VERY BULLISH (+50 to +74):
+            - Significant earnings beat
+            - Major market share gains
+            - Strategic acquisition/merger
+            - Strong competitive advantage
+            - Industry leadership position
+
+            EXTREMELY BULLISH (+75 to +100):
+            - Transformative breakthrough/innovation
+            - Exceptional financial results
+            - Market dominance achievement
+            - Game-changing acquisition/partnership
+            - Revolutionary industry disruption
+
+            IMPORTANT RULES:
+            1. Scores above +/-75 should be RARE and require EXCEPTIONAL circumstances
+            2. Most scores should fall in the -30 to +30 range for typical news
+            3. Consider both magnitude AND certainty of impacts
+            4. Multiple negative factors are required for very negative scores
+            5. Multiple positive factors are required for very positive scores
+            6. Be skeptical of overly optimistic projections
+            7. Weight concrete developments more than speculative ones
 
             Return ONLY a JSON object in this exact format:
             {
               "7days": {
                 "sentiment": <number between -100 and 100>,
                 "summary": "<prediction for next 7 days>",
-                "price_drivers": ["<event 1>", "<event 2>"],
+                "price_drivers": ["<event 1>", "<event 2>", ...],
                 "key_articles": [
                   {
-                    "title": "<exact article title>",
+                    "title": "<article title>",
                     "url": "<article url>",
+                    "publishedAt": "<article publishedAt date>",
                     "source": "<article source>",
-                    "publishedAt": "<article's publishedAt date - use exactly as provided>",
                     "predicted_impact": "<detailed impact analysis>",
                     "confidence": "high" | "medium" | "low",
                     "potential_price_effect": "<price prediction with reasoning>",
@@ -210,46 +274,39 @@ class OpenAIService {
                   }
                 ]
               },
-              "1month": <same structure as above>,
-              "3months": <same structure as above>,
-              "6months": <same structure as above>
+              "1month": <same structure as 7days>,
+              "3months": <same structure as 7days>,
+              "6months": <same structure as 7days>
             }
             
             Requirements:
-            - EVERY timeframe must have ALL fields filled out
-            - Include at least 5 articles per timeframe
-            - Use exact article titles, URLs, and dates from the provided data
-            - Include both Yahoo Finance and NewsAPI articles
-            - Ensure all text fields are properly quoted
-            - Avoid trailing commas
+            - Include Yahoo Finance articles in your analysis as they are highly relevant
+            - Provide comprehensive analysis for each timeframe and article
+            - Include at least 5 key - most relevant articles total for each timeframe when available
+            - Ensure all text fields are properly quoted and there are no trailing commas
+            - Be conservative with sentiment scores
+            - Justify extreme scores with concrete evidence
             
             Do not include any other text or formatting in your response.`
           },
           {
             role: "user",
             content: JSON.stringify({
-              articles: articles.map(article => ({
-                ...article,
-                // Ensure the date is passed through exactly as is
-                publishedAt: article.publishedAt
-              })),
-              yahooFinanceCount: articles.filter(a => a.provider === 'Yahoo Finance').length,
+              articles,
+              yahooFinanceCount: yahooArticles.length,
               totalCount: articles.length
             })
           }
         ],
-        temperature: 0.7
+        temperature: 0.7,
+        max_tokens: 8000
       });
 
-      const result = this.cleanAndParseResponse(analysis.choices[0].message.content, 'analysis');
-
-      // Log some articles to verify dates are present
-      for (const timeframe of ['7days', '1month', '3months', '6months']) {
-        console.log(`\nDates in ${timeframe} timeframe:`);
-        result[timeframe].key_articles.forEach(article => {
-          console.log(`- ${article.title}: ${article.publishedAt}`);
-        });
+      if (!analysis.choices?.[0]?.message?.content) {
+        throw new Error('Empty response from OpenAI');
       }
+
+      const result = this.cleanAndParseResponse(analysis.choices[0].message.content, 'analysis');
 
       // Validate Yahoo Finance representation
       for (const timeframe of ['7days', '1month', '3months', '6months']) {
