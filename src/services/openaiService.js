@@ -324,6 +324,36 @@ class OpenAIService {
       throw new Error(`Analysis failed: ${error.message}`);
     }
   }
+
+  async findArticleDate(pageText, url) {
+    try {
+      const analysis = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `You are an expert at finding publication dates in article text. 
+            Find the most likely publication date in the provided text.
+            Return ONLY a JSON object with the date in this format:
+            {
+              "date": "<Weekday, Month Day, Year>"
+            }
+            If no date is found, return null for the date value.`
+          },
+          {
+            role: "user",
+            content: `Find the publication date in this text from ${url}:\n\n${pageText}`
+          }
+        ],
+        temperature: 0.3
+      });
+
+      return JSON.parse(analysis.choices[0].message.content);
+    } catch (error) {
+      console.error('Error finding article date:', error);
+      return null;
+    }
+  }
 }
 
 module.exports = new OpenAIService(); 

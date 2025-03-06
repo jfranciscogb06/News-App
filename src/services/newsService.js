@@ -1,3 +1,5 @@
+const axios = require('axios');
+const cheerio = require('cheerio');
 const NewsAPI = require('newsapi');
 const yahooFinance = require('yahoo-finance2').default;
 const config = require('../config/config');
@@ -8,13 +10,56 @@ class NewsService {
     this.newsapi = new NewsAPI(config.newsapi.apiKey);
   }
 
+  async scrapeArticleDate(url) {
+    try {
+      const response = await axios.get(url);
+      const $ = cheerio.load(response.data);
+      
+      // Common date selectors in Yahoo Finance articles
+      const possibleSelectors = [
+        'time[datetime]',
+        'time[class*="date"]',
+        'span[class*="date"]',
+        'div[class*="date"]',
+        'p[class*="date"]',
+        'meta[property="article:published_time"]'
+      ];
+
+      for (const selector of possibleSelectors) {
+        const element = $(selector).first();
+        if (element.length) {
+          const dateStr = element.attr('datetime') || element.text();
+          const date = new Date(dateStr);
+          if (!isNaN(date.getTime())) {
+            return date.toLocaleDateString('en-US', {
+              weekday: 'long',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric'
+            });
+          }
+        }
+      }
+
+      // If no date found, use AI to find it in the text
+      const pageText = $('body').text().substring(0, 2000); // First 2000 chars
+      const dateAnalysis = await openaiService.findArticleDate(pageText, url);
+      if (dateAnalysis && dateAnalysis.date) {
+        return dateAnalysis.date;
+      }
+
+      return null;
+    } catch (error) {
+      console.error(`Error scraping date from ${url}:`, error);
+      return null;
+    }
+  }
+
   async getNewsApiArticles(symbol) {
     try {
       console.log('Fetching NewsAPI articles...');
       
-      // Get articles from the last 30 days for more comprehensive coverage
       const [recentNews, relevantNews] = await Promise.all([
-        // Very recent news (last 7 days)
         this.newsapi.v2.everything({
           q: `${symbol} stock`,
           language: 'en',
@@ -22,7 +67,6 @@ class NewsService {
           pageSize: 100,
           from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
         }),
-        // Relevant news from last 30 days
         this.newsapi.v2.everything({
           q: `${symbol} (forecast OR future OR upcoming OR planned OR expected OR launch OR release)`,
           language: 'en',
@@ -36,10 +80,14 @@ class NewsService {
         title: article.title,
         description: article.description,
         url: article.url,
-        publishedAt: article.publishedAt,
+        publishedAt: new Date(article.publishedAt).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        }),
         source: article.source?.name || 'NewsAPI',
         provider: 'NewsAPI',
-        // Add relevance indicators
         isRecent: new Date(article.publishedAt) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
         hasFutureTerms: this.checkForFutureTerms(article.title + ' ' + article.description)
       }));
@@ -69,25 +117,29 @@ class NewsService {
       console.log('Fetching Yahoo Finance articles...');
       
       const search = await yahooFinance.search(symbol);
-      const articles = (search?.news || [])
+      const articles = await Promise.all((search?.news || [])
         .filter(article => {
           const publishDate = new Date(article.providerPublishTime * 1000);
-          // Include articles from last 30 days that are either recent or discuss future events
           return (
             publishDate > new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) &&
             (publishDate > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) ||
              this.checkForFutureTerms(article.title + ' ' + article.description))
           );
         })
-        .map(article => ({
-          title: article.title,
-          description: article.description,
-          url: article.link,
-          publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
-          source: 'Yahoo Finance',
-          provider: 'Yahoo Finance',
-          isRecent: new Date(article.providerPublishTime * 1000) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-          hasFutureTerms: this.checkForFutureTerms(article.title + ' ' + article.description)
+        .map(async article => {
+          const scrapedDate = await this.scrapeArticleDate(article.link);
+          console.log(`Scraped date for "${article.title.substring(0, 50)}...": ${scrapedDate}`);
+          
+          return {
+            title: article.title,
+            description: article.description,
+            url: article.link,
+            publishedAt: scrapedDate || 'Date not available',
+            source: 'Yahoo Finance',
+            provider: 'Yahoo Finance',
+            isRecent: new Date(article.providerPublishTime * 1000) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+            hasFutureTerms: this.checkForFutureTerms(article.title + ' ' + article.description)
+          };
         }));
 
       console.log(`Found ${articles.length} Yahoo Finance articles`);
