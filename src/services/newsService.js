@@ -12,31 +12,36 @@ class NewsService {
     try {
       console.log('Fetching NewsAPI articles...');
       
-      const [recentNews, olderNews] = await Promise.all([
+      // Get articles from the last 30 days for more comprehensive coverage
+      const [recentNews, relevantNews] = await Promise.all([
+        // Very recent news (last 7 days)
         this.newsapi.v2.everything({
-          q: symbol,
+          q: `${symbol} stock`,
           language: 'en',
           sortBy: 'publishedAt',
           pageSize: 100,
           from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
         }),
+        // Relevant news from last 30 days
         this.newsapi.v2.everything({
-          q: symbol,
+          q: `${symbol} (forecast OR future OR upcoming OR planned OR expected OR launch OR release)`,
           language: 'en',
           sortBy: 'relevancy',
           pageSize: 100,
-          from: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString(),
-          to: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+          from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
         })
       ]);
 
-      const articles = [...recentNews.articles, ...olderNews.articles].map(article => ({
+      const articles = [...recentNews.articles, ...relevantNews.articles].map(article => ({
         title: article.title,
         description: article.description,
         url: article.url,
         publishedAt: article.publishedAt,
         source: article.source?.name || 'NewsAPI',
-        provider: 'NewsAPI'
+        provider: 'NewsAPI',
+        // Add relevance indicators
+        isRecent: new Date(article.publishedAt) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+        hasFutureTerms: this.checkForFutureTerms(article.title + ' ' + article.description)
       }));
 
       console.log(`Found ${articles.length} NewsAPI articles`);
@@ -47,19 +52,43 @@ class NewsService {
     }
   }
 
+  checkForFutureTerms(text) {
+    const futureTerms = [
+      'will', 'future', 'upcoming', 'planned', 'expected', 'forecast',
+      'launch', 'release', 'announce', 'roadmap', 'guidance', 'outlook',
+      'anticipate', 'predict', 'projection', 'estimate', 'target',
+      'next quarter', 'next year', 'pipeline', 'development', 'beta',
+      'prototype', 'testing', 'trial'
+    ];
+    const lowerText = text.toLowerCase();
+    return futureTerms.some(term => lowerText.includes(term));
+  }
+
   async getYahooFinanceArticles(symbol) {
     try {
       console.log('Fetching Yahoo Finance articles...');
       
       const search = await yahooFinance.search(symbol);
-      const articles = (search?.news || []).map(article => ({
-        title: article.title,
-        description: article.description,
-        url: article.link,
-        publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
-        source: 'Yahoo Finance',
-        provider: 'Yahoo Finance'
-      }));
+      const articles = (search?.news || [])
+        .filter(article => {
+          const publishDate = new Date(article.providerPublishTime * 1000);
+          // Include articles from last 30 days that are either recent or discuss future events
+          return (
+            publishDate > new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) &&
+            (publishDate > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) ||
+             this.checkForFutureTerms(article.title + ' ' + article.description))
+          );
+        })
+        .map(article => ({
+          title: article.title,
+          description: article.description,
+          url: article.link,
+          publishedAt: new Date(article.providerPublishTime * 1000).toISOString(),
+          source: 'Yahoo Finance',
+          provider: 'Yahoo Finance',
+          isRecent: new Date(article.providerPublishTime * 1000) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          hasFutureTerms: this.checkForFutureTerms(article.title + ' ' + article.description)
+        }));
 
       console.log(`Found ${articles.length} Yahoo Finance articles`);
       return articles;
@@ -110,8 +139,19 @@ class NewsService {
       // 3. Get Yahoo Finance articles
       const yahooArticles = await this.getYahooFinanceArticles(symbol);
       
-      // 4. Combine all articles and get full content
-      const allArticles = [...selectedNewsApiArticles, ...yahooArticles];
+      // 4. Combine all articles and prioritize by relevance
+      const allArticles = [...selectedNewsApiArticles, ...yahooArticles]
+        .sort((a, b) => {
+          // Prioritize articles with future terms
+          if (a.hasFutureTerms && !b.hasFutureTerms) return -1;
+          if (!a.hasFutureTerms && b.hasFutureTerms) return 1;
+          // Then consider recency
+          if (a.isRecent && !b.isRecent) return -1;
+          if (!a.isRecent && b.isRecent) return 1;
+          // Finally sort by date
+          return new Date(b.publishedAt) - new Date(a.publishedAt);
+        });
+
       console.log(`Total articles before final selection: ${allArticles.length}`);
 
       // 5. Get full content for selected articles
