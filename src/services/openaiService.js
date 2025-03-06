@@ -171,84 +171,83 @@ class OpenAIService {
     try {
       console.log(`Starting future prediction analysis for ${symbol} with ${articles.length} articles`);
 
-      // Count Yahoo Finance articles
-      const yahooArticles = articles.filter(a => a.provider === 'Yahoo Finance');
-      console.log(`Analyzing ${yahooArticles.length} Yahoo Finance articles and ${articles.length - yahooArticles.length} NewsAPI articles`);
-
       const analysis = await this.openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes. You must return a valid JSON object with no trailing commas and properly quoted strings. 
+            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes.
 
-            IMPORTANT: Ensure Yahoo Finance articles are well-represented in your analysis as they are typically highly relevant to stock performance.
+            IMPORTANT: Your response must be a single, valid JSON object. Do not include any explanatory text outside the JSON structure.
 
-            Return ONLY a JSON object in this exact format:
+            The response must follow this exact format:
             {
               "7days": {
-                "sentiment": <number between -100 and 100>,
-                "summary": "<prediction for next 7 days>",
-                "price_drivers": ["<event 1>", "<event 2>", ...],
+                "sentiment_score": <number between -100 and 100>,
+                "sentiment_explanation": "<string>",
+                "sentiment_factors": ["<string>", "<string>"],
+                "confidence_level": "<high|medium|low>",
+                "potential_sentiment_changes": ["<string>"],
+                "analysis": "<string>",
+                "market_conditions": "<string>",
+                "risk_factors": ["<string>"],
+                "growth_catalysts": ["<string>"],
                 "key_articles": [
                   {
-                    "title": "<article title>",
-                    "url": "<article url>",
-                    "source": "<article source>",
-                    "predicted_impact": "<detailed impact analysis>",
-                    "confidence": "high" | "medium" | "low",
-                    "potential_price_effect": "<price prediction with reasoning>",
-                    "detailed_analysis": "<comprehensive analysis>"
+                    "title": "<string>",
+                    "source": "<string>",
+                    "significance": "<string>",
+                    "sentiment_impact": "<string>",
+                    "reliability": "<high|medium|low>",
+                    "related_developments": ["<string>"]
                   }
                 ]
               },
-              "1month": <same structure as 7days>,
-              "3months": <same structure as 7days>,
-              "6months": <same structure as 7days>
+              "1month": {
+                // same structure as 7days
+              },
+              "3months": {
+                // same structure as 7days
+              },
+              "6months": {
+                // same structure as 7days
+              }
             }
-            
-            Focus on:
-            - Future events and developments
-            - Upcoming catalysts or risks
-            - Market trends that could affect the stock
-            - Potential scenarios and their likelihood
-            - Detailed reasoning for each prediction
-            - Long-term implications of current developments
-            
-            Requirements:
-            - Include Yahoo Finance articles in your analysis as they are highly relevant
-            - Provide comprehensive analysis for each timeframe and article
-            - Include at least 5 key - most relevant articles total for each timeframe when available
-            - Ensure all text fields are properly quoted and there are no trailing commas
-            
-            Do not include any other text or formatting in your response.`
+
+            Guidelines:
+            1. Sentiment Score:
+               - -100: Extremely Bearish
+               - -50: Bearish
+               - 0: Neutral
+               - +50: Bullish
+               - +100: Extremely Bullish
+
+            2. Article Selection:
+               - Include most relevant articles for each timeframe
+               - Minimum 5 articles per timeframe
+               - Prioritize Yahoo Finance articles
+               - Focus on articles about future developments
+
+            3. Analysis Requirements:
+               - Detailed impact analysis for each article
+               - Clear connection between articles and sentiment
+               - Specific price effect reasoning
+               - Related developments between articles
+
+            CRITICAL: Ensure all JSON properties are properly quoted and all arrays/objects are properly terminated.`
           },
           {
             role: "user",
             content: JSON.stringify({
               articles,
-              yahooFinanceCount: yahooArticles.length,
-              totalCount: articles.length
+              articleCount: articles.length
             })
           }
         ],
-        temperature: 0.7,
-        max_tokens: 8000
+        temperature: 0.5
       });
 
-      if (!analysis.choices?.[0]?.message?.content) {
-        throw new Error('Empty response from OpenAI');
-      }
-
       const result = this.cleanAndParseResponse(analysis.choices[0].message.content, 'analysis');
-
-      // Validate Yahoo Finance representation
-      for (const timeframe of ['7days', '1month', '3months', '6months']) {
-        const timeframeArticles = result[timeframe].key_articles;
-        const yahooArticlesInTimeframe = timeframeArticles.filter(a => a.source === 'Yahoo Finance');
-        console.log(`${timeframe}: ${yahooArticlesInTimeframe.length} Yahoo Finance articles out of ${timeframeArticles.length} total`);
-      }
-
       console.log('Validating analysis structure...');
       this.validateAnalysisStructure(result);
       console.log('Analysis structure validated successfully');
