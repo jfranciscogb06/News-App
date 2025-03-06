@@ -180,9 +180,80 @@ class OpenAIService {
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes. You must return a valid JSON object with no trailing commas and properly quoted strings. 
+            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes.
 
-            IMPORTANT: Ensure Yahoo Finance articles are well-represented in your analysis as they are typically highly relevant to stock performance.
+            SENTIMENT SCORING GUIDELINES - BE CONSERVATIVE AND STRICT:
+            
+            EXTREMELY BEARISH (-100 to -75):
+            - Major company crisis or scandal
+            - Bankruptcy risk or severe financial distress
+            - Loss of core business or critical market
+            - Multiple severe regulatory actions
+            - Industry-wide collapse affecting company
+
+            VERY BEARISH (-74 to -50):
+            - Significant earnings miss
+            - Major product failure or recall
+            - Loss of key customers/partnerships
+            - Serious legal/regulatory issues
+            - Substantial market share loss
+
+            MODERATELY BEARISH (-49 to -25):
+            - Missed earnings expectations
+            - Increased competition
+            - Minor legal/regulatory issues
+            - Declining market share
+            - Negative analyst coverage
+
+            SLIGHTLY BEARISH (-24 to -1):
+            - Minor setbacks
+            - Short-term challenges
+            - Cautious guidance
+            - Market uncertainty
+            - Mixed analyst opinions
+
+            NEUTRAL (0):
+            - Balanced positive and negative news
+            - No significant developments
+            - Stable market position
+            - Meeting expectations
+
+            SLIGHTLY BULLISH (+1 to +24):
+            - Minor positive developments
+            - Meeting expectations with optimism
+            - Favorable market conditions
+            - Positive analyst comments
+            - Small competitive advantages
+
+            MODERATELY BULLISH (+25 to +49):
+            - Strong earnings meet
+            - New product success
+            - Market share gains
+            - Positive industry trends
+            - Multiple analyst upgrades
+
+            VERY BULLISH (+50 to +74):
+            - Significant earnings beat
+            - Major market share gains
+            - Strategic acquisition/merger
+            - Strong competitive advantage
+            - Industry leadership position
+
+            EXTREMELY BULLISH (+75 to +100):
+            - Transformative breakthrough/innovation
+            - Exceptional financial results
+            - Market dominance achievement
+            - Game-changing acquisition/partnership
+            - Revolutionary industry disruption
+
+            IMPORTANT RULES:
+            1. Scores above +/-75 should be RARE and require EXCEPTIONAL circumstances
+            2. Most scores should fall in the -30 to +30 range for typical news
+            3. Consider both magnitude AND certainty of impacts
+            4. Multiple negative factors are required for very negative scores
+            5. Multiple positive factors are required for very positive scores
+            6. Be skeptical of overly optimistic projections
+            7. Weight concrete developments more than speculative ones
 
             Return ONLY a JSON object in this exact format:
             {
@@ -207,19 +278,13 @@ class OpenAIService {
               "6months": <same structure as 7days>
             }
             
-            Focus on:
-            - Future events and developments
-            - Upcoming catalysts or risks
-            - Market trends that could affect the stock
-            - Potential scenarios and their likelihood
-            - Detailed reasoning for each prediction
-            - Long-term implications of current developments
-            
             Requirements:
             - Include Yahoo Finance articles in your analysis as they are highly relevant
             - Provide comprehensive analysis for each timeframe and article
             - Include at least 5 key - most relevant articles total for each timeframe when available
             - Ensure all text fields are properly quoted and there are no trailing commas
+            - Be conservative with sentiment scores
+            - Justify extreme scores with concrete evidence
             
             Do not include any other text or formatting in your response.`
           },
