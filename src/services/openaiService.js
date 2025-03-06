@@ -60,48 +60,42 @@ class OpenAIService {
 
   async selectRelevantArticles(symbol, articles) {
     try {
-      // Extract just the titles for initial review
-      const articleTitles = articles.map(article => ({
-        title: article.title,
-        url: article.url
-      }));
-
       const analysis = await this.openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select only the most relevant ones that could impact future stock performance.
+            content: `You are a financial analyst expert. Review these articles about ${symbol} stock and select only the most relevant and unique ones that could impact future stock performance.
 
-            Select titles that:
-            - Are specifically about or closely related to ${symbol} or directly impact it
-            - Suggest developments or events
-            - Indicate potential stock price impact
-            - Discuss future predictions or plans
+            Select articles that:
+            - Are specifically about ${symbol} or directly impact it
+            - Contain unique information (avoid duplicates)
+            - Have potential impact on stock price
+            - Include future predictions or developments
 
-            Return a JSON array of selected articles:
+            For each article, explain in one sentence why it's relevant.
+            
+            Return a JSON array of selected articles with explanations:
             {
               "selected_articles": [
                 {
+                  "title": "<article title>",
                   "url": "<article url>",
                   "relevance": "<one sentence explanation>"
                 }
               ]
-            }
-
-            Only analyze the titles. Do not include any other text in your response.`
+            }`
           },
           {
             role: "user",
-            content: JSON.stringify(articleTitles)
+            content: JSON.stringify(articles)
           }
         ],
-        temperature: 0.5
+        temperature: 0.5,
+        max_tokens: 2000
       });
 
       const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
-      
-      // Filter the original articles based on selected URLs
       return articles.filter(article => 
         result.selected_articles.some(selected => selected.url === article.url)
       );
@@ -171,83 +165,85 @@ class OpenAIService {
     try {
       console.log(`Starting future prediction analysis for ${symbol} with ${articles.length} articles`);
 
+      // Count Yahoo Finance articles
+      const yahooArticles = articles.filter(a => a.provider === 'Yahoo Finance');
+      console.log(`Analyzing ${yahooArticles.length} Yahoo Finance articles and ${articles.length - yahooArticles.length} NewsAPI articles`);
+
       const analysis = await this.openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes.
+            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes. You must return a valid JSON object with no trailing commas and properly quoted strings. 
 
-            IMPORTANT: Your response must be a single, valid JSON object. Do not include any explanatory text outside the JSON structure.
+            IMPORTANT: Ensure Yahoo Finance articles are well-represented in your analysis as they are typically highly relevant to stock performance.
 
-            The response must follow this exact format:
+            Return ONLY a JSON object in this exact format:
             {
               "7days": {
-                "sentiment_score": <number between -100 and 100>,
-                "sentiment_explanation": "<string>",
-                "sentiment_factors": ["<string>", "<string>"],
-                "confidence_level": "<high|medium|low>",
-                "potential_sentiment_changes": ["<string>"],
-                "analysis": "<string>",
-                "market_conditions": "<string>",
-                "risk_factors": ["<string>"],
-                "growth_catalysts": ["<string>"],
+                "sentiment": <number between -100 and 100>,
+                "summary": "<prediction for next 7 days>",
+                "price_drivers": ["<event 1>", "<event 2>", ...],
                 "key_articles": [
                   {
-                    "title": "<string>",
-                    "source": "<string>",
-                    "significance": "<string>",
-                    "sentiment_impact": "<string>",
-                    "reliability": "<high|medium|low>",
-                    "related_developments": ["<string>"]
+                    "title": "<article title>",
+                    "url": "<article url>",
+                    "source": "<article source>",
+                    "predicted_impact": "<detailed impact analysis>",
+                    "confidence": "high" | "medium" | "low",
+                    "potential_price_effect": "<price prediction with reasoning>",
+                    "detailed_analysis": "<comprehensive analysis>"
                   }
                 ]
               },
-              "1month": {
-                // same structure as 7days
-              },
-              "3months": {
-                // same structure as 7days
-              },
-              "6months": {
-                // same structure as 7days
-              }
+              "1month": <same structure as 7days>,
+              "3months": <same structure as 7days>,
+              "6months": <same structure as 7days>
             }
-
-            Guidelines:
-            1. Sentiment Score:
-               - -100: Extremely Bearish
-               - -50: Bearish
-               - 0: Neutral
-               - +50: Bullish
-               - +100: Extremely Bullish
-
-            2. Article Selection:
-               - Include most relevant articles for each timeframe
-               - Minimum 5 articles per timeframe
-               - Prioritize Yahoo Finance articles
-               - Focus on articles about future developments
-
-            3. Analysis Requirements:
-               - Detailed impact analysis for each article
-               - Clear connection between articles and sentiment
-               - Specific price effect reasoning
-               - Related developments between articles
-
-            CRITICAL: Ensure all JSON properties are properly quoted and all arrays/objects are properly terminated.`
+            
+            Focus on:
+            - Future events and developments
+            - Upcoming catalysts or risks
+            - Market trends that could affect the stock
+            - Potential scenarios and their likelihood
+            - Detailed reasoning for each prediction
+            - Long-term implications of current developments
+            
+            Requirements:
+            - Include ALL Yahoo Finance articles in your analysis as they are highly relevant
+            - For each timeframe, include at least 2 Yahoo Finance articles if available
+            - Provide comprehensive analysis for each timeframe and article
+            - Include at least 5 key articles total for each timeframe when available
+            - Ensure all text fields are properly quoted and there are no trailing commas
+            
+            Do not include any other text or formatting in your response.`
           },
           {
             role: "user",
             content: JSON.stringify({
               articles,
-              articleCount: articles.length
+              yahooFinanceCount: yahooArticles.length,
+              totalCount: articles.length
             })
           }
         ],
-        temperature: 0.5
+        temperature: 0.7,
+        max_tokens: 8000
       });
 
+      if (!analysis.choices?.[0]?.message?.content) {
+        throw new Error('Empty response from OpenAI');
+      }
+
       const result = this.cleanAndParseResponse(analysis.choices[0].message.content, 'analysis');
+
+      // Validate Yahoo Finance representation
+      for (const timeframe of ['7days', '1month', '3months', '6months']) {
+        const timeframeArticles = result[timeframe].key_articles;
+        const yahooArticlesInTimeframe = timeframeArticles.filter(a => a.source === 'Yahoo Finance');
+        console.log(`${timeframe}: ${yahooArticlesInTimeframe.length} Yahoo Finance articles out of ${timeframeArticles.length} total`);
+      }
+
       console.log('Validating analysis structure...');
       this.validateAnalysisStructure(result);
       console.log('Analysis structure validated successfully');
