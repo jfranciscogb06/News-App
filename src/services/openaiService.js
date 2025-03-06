@@ -48,6 +48,12 @@ class OpenAIService {
           !Array.isArray(data[timeframe].key_articles)) {
         throw new Error(`Invalid structure for timeframe: ${timeframe}`);
       }
+
+      // Validate that Yahoo Finance articles are included
+      const yahooArticles = data[timeframe].key_articles.filter(a => a.source === 'Yahoo Finance');
+      if (yahooArticles.length === 0) {
+        console.warn(`Warning: No Yahoo Finance articles in ${timeframe} timeframe`);
+      }
     }
     return true;
   }
@@ -159,12 +165,20 @@ class OpenAIService {
     try {
       console.log(`Starting future prediction analysis for ${symbol} with ${articles.length} articles`);
 
+      // Count Yahoo Finance articles
+      const yahooArticles = articles.filter(a => a.provider === 'Yahoo Finance');
+      console.log(`Analyzing ${yahooArticles.length} Yahoo Finance articles and ${articles.length - yahooArticles.length} NewsAPI articles`);
+
       const analysis = await this.openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes. You must return a valid JSON object with no trailing commas and properly quoted strings. Return ONLY a JSON object in this exact format:
+            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes. You must return a valid JSON object with no trailing commas and properly quoted strings. 
+
+            IMPORTANT: Ensure Yahoo Finance articles are well-represented in your analysis as they are typically highly relevant to stock performance.
+
+            Return ONLY a JSON object in this exact format:
             {
               "7days": {
                 "sentiment": <number between -100 and 100>,
@@ -174,6 +188,7 @@ class OpenAIService {
                   {
                     "title": "<article title>",
                     "url": "<article url>",
+                    "source": "<article source>",
                     "predicted_impact": "<detailed impact analysis>",
                     "confidence": "high" | "medium" | "low",
                     "potential_price_effect": "<price prediction with reasoning>",
@@ -194,18 +209,26 @@ class OpenAIService {
             - Detailed reasoning for each prediction
             - Long-term implications of current developments
             
-            Provide comprehensive analysis for each timeframe and article.
-            Include at least 5 key articles for each timeframe when available.
-            Ensure all text fields are properly quoted and there are no trailing commas.
+            Requirements:
+            - Include ALL Yahoo Finance articles in your analysis as they are highly relevant
+            - For each timeframe, include at least 2 Yahoo Finance articles if available
+            - Provide comprehensive analysis for each timeframe and article
+            - Include at least 5 key articles total for each timeframe when available
+            - Ensure all text fields are properly quoted and there are no trailing commas
+            
             Do not include any other text or formatting in your response.`
           },
           {
             role: "user",
-            content: JSON.stringify(articles)
+            content: JSON.stringify({
+              articles,
+              yahooFinanceCount: yahooArticles.length,
+              totalCount: articles.length
+            })
           }
         ],
         temperature: 0.7,
-        max_tokens: 8000  // Increased from 4000 to handle more articles
+        max_tokens: 8000
       });
 
       if (!analysis.choices?.[0]?.message?.content) {
@@ -213,6 +236,13 @@ class OpenAIService {
       }
 
       const result = this.cleanAndParseResponse(analysis.choices[0].message.content, 'analysis');
+
+      // Validate Yahoo Finance representation
+      for (const timeframe of ['7days', '1month', '3months', '6months']) {
+        const timeframeArticles = result[timeframe].key_articles;
+        const yahooArticlesInTimeframe = timeframeArticles.filter(a => a.source === 'Yahoo Finance');
+        console.log(`${timeframe}: ${yahooArticlesInTimeframe.length} Yahoo Finance articles out of ${timeframeArticles.length} total`);
+      }
 
       console.log('Validating analysis structure...');
       this.validateAnalysisStructure(result);
