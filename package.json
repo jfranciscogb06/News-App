@@ -1,7 +1,6 @@
 {
   "name": "news-app",
   "version": "1.0.0",
-  "main": "index.js",
   "engines": {
     "node": ">=14.0.0"
   },
@@ -17,6 +16,7 @@
     "express": "^4.18.2",
     "newsapi": "^2.4.1",
     "openai": "^4.86.1",
+    "pg": "^8.11.3",
     "yahoo-finance2": "^2.13.3"
   },
   "devDependencies": {
