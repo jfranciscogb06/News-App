@@ -1,4 +1,32 @@
+const mongoose = require('mongoose');
 const db = require('../utils/db');
+
+// Define the schema for news cache
+const newsCacheSchema = new mongoose.Schema({
+  symbol: {
+    type: String,
+    required: true,
+    uppercase: true,
+    trim: true,
+    index: true
+  },
+  data: {
+    type: mongoose.Schema.Types.Mixed,
+    required: true
+  },
+  created_at: {
+    type: Date,
+    default: Date.now
+  },
+  expires_at: {
+    type: Date,
+    required: true,
+    index: true
+  }
+});
+
+// Create the model
+const NewsCacheModel = mongoose.model('NewsCache', newsCacheSchema);
 
 class NewsCache {
   /**
@@ -8,14 +36,14 @@ class NewsCache {
    */
   static async getBySymbol(symbol) {
     try {
-      const result = await db.query(
-        'SELECT data FROM news_cache WHERE symbol = $1 AND expires_at > NOW()',
-        [symbol.toUpperCase()]
-      );
+      const result = await NewsCacheModel.findOne({
+        symbol: symbol.toUpperCase(),
+        expires_at: { $gt: new Date() }
+      });
       
-      if (result.rows.length > 0) {
+      if (result) {
         console.log(`Cache hit for symbol: ${symbol}`);
-        return result.rows[0].data;
+        return result.data;
       }
       
       console.log(`Cache miss for symbol: ${symbol}`);
@@ -35,14 +63,19 @@ class NewsCache {
    */
   static async save(symbol, data, ttlHours = 24) {
     try {
+      // Calculate expiration date
+      const expiresAt = new Date();
+      expiresAt.setHours(expiresAt.getHours() + ttlHours);
+      
       // Delete any existing cache for this symbol
-      await db.query('DELETE FROM news_cache WHERE symbol = $1', [symbol.toUpperCase()]);
+      await NewsCacheModel.deleteMany({ symbol: symbol.toUpperCase() });
       
       // Insert new cache entry
-      await db.query(
-        'INSERT INTO news_cache (symbol, data, expires_at) VALUES ($1, $2, NOW() + interval \'1 hour\' * $3)',
-        [symbol.toUpperCase(), data, ttlHours]
-      );
+      await NewsCacheModel.create({
+        symbol: symbol.toUpperCase(),
+        data,
+        expires_at: expiresAt
+      });
       
       console.log(`Cache saved for symbol: ${symbol}, expires in ${ttlHours} hours`);
       return true;
@@ -58,9 +91,11 @@ class NewsCache {
    */
   static async cleanExpired() {
     try {
-      const result = await db.query('DELETE FROM news_cache WHERE expires_at <= NOW() RETURNING id');
-      const count = result.rows.length;
+      const result = await NewsCacheModel.deleteMany({
+        expires_at: { $lte: new Date() }
+      });
       
+      const count = result.deletedCount;
       if (count > 0) {
         console.log(`Cleaned ${count} expired cache entries`);
       }
