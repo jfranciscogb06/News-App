@@ -2,11 +2,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 
 // Get the MongoDB URI from environment variables
-const mongoUri = process.env.MONGODB_URI;
-
-// Replace <db_password> with your actual password
-// You'll need to replace this with your actual password when running the script
-const uri = mongoUri.replace('<db_password>', 'your_password_here');
+const uri = process.env.MONGODB_URI;
 
 console.log('Mongoose version:', mongoose.version);
 console.log('Connecting to MongoDB...');
