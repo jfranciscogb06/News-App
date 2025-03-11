@@ -106,6 +106,24 @@ class NewsCache {
       return 0;
     }
   }
+
+  /**
+   * Clear all cache entries
+   * @returns {Promise<number>} - Number of deleted entries
+   */
+  static async clearAll() {
+    try {
+      const result = await NewsCacheModel.deleteMany({});
+      
+      const count = result.deletedCount;
+      console.log(`Cleared all cache entries: ${count} entries deleted`);
+      
+      return count;
+    } catch (error) {
+      console.error('Error clearing cache:', error);
+      return 0;
+    }
+  }
 }
 
 module.exports = NewsCache; 
