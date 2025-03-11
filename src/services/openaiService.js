@@ -20,6 +20,9 @@ class OpenAIService {
         .replace(/\s+/g, ' ')  // Normalize whitespace
         .trim();
       
+      // Fix the + sign issue in sentiment scores
+      cleaned = cleaned.replace(/"sentiment":\s*\+(\d+)/g, '"sentiment": $1');
+      
       // Log the cleaned response
       console.log(`Cleaned ${context} response:`, cleaned);
 
@@ -45,10 +48,13 @@ class OpenAIService {
           typeof data[timeframe].sentiment !== 'number' ||
           typeof data[timeframe].summary !== 'string' ||
           !Array.isArray(data[timeframe].price_drivers) ||
-          !Array.isArray(data[timeframe].key_articles)) {
+          !Array.isArray(data[timeframe].key_articles) ||
+          !['up', 'down', 'neutral'].includes(data[timeframe].direction) ||
+          typeof data[timeframe].expected_change_percent !== 'string') {
         throw new Error(`Invalid structure for timeframe: ${timeframe}`);
       }
     }
+    console.log('Analysis structure validated successfully');
     return true;
   }
 
@@ -170,7 +176,7 @@ class OpenAIService {
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert specializing in future market predictions. Analyze these articles about ${symbol} stock and predict future outcomes.
+            content: `You are a financial analyst expert specializing in future market predictions. Based on these articles about ${symbol} stock, predict whether the stock will go up or down in different timeframes.
 
             SENTIMENT SCORING GUIDELINES - BE CONSERVATIVE AND STRICT:
             
@@ -244,12 +250,17 @@ class OpenAIService {
             5. Multiple positive factors are required for very positive scores
             6. Be skeptical of overly optimistic projections
             7. Weight concrete developments more than speculative ones
+            8. Sentiment scores must be integers without any + sign prefix (e.g., use 20 not +20)
+
+            For each timeframe, explicitly state whether you think the stock will go up or down based on the articles, and by approximately what percentage.
 
             Return ONLY a JSON object in this exact format:
             {
               "7days": {
-                "sentiment": <number between -100 and 100>,
-                "summary": "<prediction for next 7 days>",
+                "sentiment": <number between -100 and 100 without + prefix>,
+                "direction": "up" | "down" | "neutral",
+                "expected_change_percent": "<estimated percentage change>",
+                "summary": "<prediction for next 7 days including whether stock will go up or down>",
                 "price_drivers": ["<event 1>", "<event 2>", ...],
                 "key_articles": [
                   {
@@ -275,6 +286,8 @@ class OpenAIService {
             - Ensure all text fields are properly quoted and there are no trailing commas
             - Be conservative with sentiment scores
             - Justify extreme scores with concrete evidence
+            - Make sure sentiment scores are integers without + signs (e.g., 20 not +20)
+            - Clearly state if you think the stock will go up or down in each timeframe
             
             Do not include any other text or formatting in your response.`
           },
