@@ -1,7 +1,6 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const NewsAPI = require('newsapi');
-const yahooFinance = require('yahoo-finance2').default;
 const config = require('../config/config');
 const openaiService = require('./openaiService');
 
@@ -15,7 +14,7 @@ class NewsService {
       const response = await axios.get(url);
       const $ = cheerio.load(response.data);
       
-      // Common date selectors in Yahoo Finance articles
+      // Common date selectors in articles
       const possibleSelectors = [
         'time[datetime]',
         'time[class*="date"]',
@@ -59,7 +58,7 @@ class NewsService {
     try {
       console.log('Fetching NewsAPI articles...');
       
-      const [recentNews, relevantNews] = await Promise.all([
+      const [recentNews, relevantNews, futureNews] = await Promise.all([
         this.newsapi.v2.everything({
           q: `${symbol} stock`,
           language: 'en',
@@ -73,24 +72,40 @@ class NewsService {
           sortBy: 'relevancy',
           pageSize: 100,
           from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+        }),
+        this.newsapi.v2.everything({
+          q: `${symbol} (analysis OR prediction OR outlook OR guidance OR earnings OR revenue OR growth)`,
+          language: 'en',
+          sortBy: 'relevancy',
+          pageSize: 100,
+          from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
         })
       ]);
 
-      const articles = [...recentNews.articles, ...relevantNews.articles].map(article => ({
-        title: article.title,
-        description: article.description,
-        url: article.url,
-        publishedAt: new Date(article.publishedAt).toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        }),
-        source: article.source?.name || 'NewsAPI',
-        provider: 'NewsAPI',
-        isRecent: new Date(article.publishedAt) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-        hasFutureTerms: this.checkForFutureTerms(article.title + ' ' + article.description)
-      }));
+      // Combine all articles and remove duplicates
+      const uniqueUrls = new Set();
+      const articles = [...recentNews.articles, ...relevantNews.articles, ...futureNews.articles]
+        .filter(article => {
+          if (uniqueUrls.has(article.url)) return false;
+          uniqueUrls.add(article.url);
+          return true;
+        })
+        .map(article => ({
+          title: article.title,
+          description: article.description,
+          url: article.url,
+          publishedAt: new Date(article.publishedAt).toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          }),
+          source: article.source?.name || 'NewsAPI',
+          provider: 'NewsAPI',
+          content: article.content || article.description,
+          isRecent: new Date(article.publishedAt) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          hasFutureTerms: this.checkForFutureTerms(article.title + ' ' + article.description)
+        }));
 
       console.log(`Found ${articles.length} NewsAPI articles`);
       return articles;
@@ -112,52 +127,7 @@ class NewsService {
     return futureTerms.some(term => lowerText.includes(term));
   }
 
-  async getYahooFinanceArticles(symbol) {
-    try {
-      console.log('Fetching Yahoo Finance articles...');
-      
-      const search = await yahooFinance.search(symbol);
-      const articles = await Promise.all((search?.news || [])
-        .filter(article => {
-          const publishDate = new Date(article.providerPublishTime * 1000);
-          return (
-            publishDate > new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) &&
-            (publishDate > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) ||
-             this.checkForFutureTerms(article.title + ' ' + article.description))
-          );
-        })
-        .map(async article => {
-          const scrapedDate = await this.scrapeArticleDate(article.link);
-          console.log(`Scraped date for "${article.title.substring(0, 50)}...": ${scrapedDate}`);
-          
-          return {
-            title: article.title,
-            description: article.description,
-            url: article.link,
-            publishedAt: scrapedDate || 'Date not available',
-            source: 'Yahoo Finance',
-            provider: 'Yahoo Finance',
-            isRecent: new Date(article.providerPublishTime * 1000) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-            hasFutureTerms: this.checkForFutureTerms(article.title + ' ' + article.description)
-          };
-        }));
-
-      console.log(`Found ${articles.length} Yahoo Finance articles`);
-      return articles;
-    } catch (error) {
-      console.error('Error fetching Yahoo Finance articles:', error);
-      return [];
-    }
-  }
-
   async getArticleDetails(url, article) {
-    if (article.provider === 'Yahoo Finance') {
-      return {
-        ...article,
-        content: article.description
-      };
-    }
-
     try {
       const response = await this.newsapi.v2.everything({
         q: `url:"${url}"`,
@@ -185,33 +155,31 @@ class NewsService {
       const newsApiArticles = await this.getNewsApiArticles(symbol);
       
       // 2. Let OpenAI select unique and relevant articles
-      const selectedNewsApiArticles = await openaiService.selectRelevantArticles(symbol, newsApiArticles);
-      console.log(`Selected ${selectedNewsApiArticles.length} relevant NewsAPI articles`);
+      const selectedArticles = await openaiService.selectRelevantArticles(symbol, newsApiArticles);
+      console.log(`Selected ${selectedArticles.length} relevant articles`);
 
-      // 3. Get Yahoo Finance articles
-      const yahooArticles = await this.getYahooFinanceArticles(symbol);
+      // 3. Sort articles by relevance and recency
+      const sortedArticles = selectedArticles.sort((a, b) => {
+        // Prioritize articles with future terms
+        if (a.hasFutureTerms && !b.hasFutureTerms) return -1;
+        if (!a.hasFutureTerms && b.hasFutureTerms) return 1;
+        // Then consider recency
+        if (a.isRecent && !b.isRecent) return -1;
+        if (!a.isRecent && b.isRecent) return 1;
+        // Finally sort by date
+        return new Date(b.publishedAt) - new Date(a.publishedAt);
+      });
+
+      console.log(`Total articles for analysis: ${sortedArticles.length}`);
       
-      // 4. Combine all articles and prioritize by relevance
-      const allArticles = [...selectedNewsApiArticles, ...yahooArticles]
-        .sort((a, b) => {
-          // Prioritize articles with future terms
-          if (a.hasFutureTerms && !b.hasFutureTerms) return -1;
-          if (!a.hasFutureTerms && b.hasFutureTerms) return 1;
-          // Then consider recency
-          if (a.isRecent && !b.isRecent) return -1;
-          if (!a.isRecent && b.isRecent) return 1;
-          // Finally sort by date
-          return new Date(b.publishedAt) - new Date(a.publishedAt);
-        });
-
-      console.log(`Total articles before final selection: ${allArticles.length}`);
-
-      // 5. Get full content for selected articles
+      // 4. Get full content for selected articles if needed
       const articlesWithContent = await Promise.all(
-        allArticles.map(article => this.getArticleDetails(article.url, article))
+        sortedArticles.map(article => 
+          article.content ? article : this.getArticleDetails(article.url, article)
+        )
       );
 
-      // 6. Final analysis of all unique articles
+      // 5. Final analysis of all unique articles
       const analysis = await openaiService.analyzeArticles(symbol, articlesWithContent);
       
       return analysis;
