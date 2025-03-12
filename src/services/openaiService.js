@@ -50,8 +50,31 @@ class OpenAIService {
           !Array.isArray(data[timeframe].price_drivers) ||
           !Array.isArray(data[timeframe].key_articles) ||
           !['up', 'down', 'neutral'].includes(data[timeframe].direction) ||
-          typeof data[timeframe].expected_change_percent !== 'string') {
+          typeof data[timeframe].expected_change_percent !== 'string' ||
+          typeof data[timeframe].confidence_level !== 'string') {
         throw new Error(`Invalid structure for timeframe: ${timeframe}`);
+      }
+      
+      // Validate price_drivers structure
+      for (const driver of data[timeframe].price_drivers) {
+        if (!driver.factor || 
+            !driver.impact || 
+            !['positive', 'negative', 'neutral'].includes(driver.impact) ||
+            !driver.confidence || 
+            !['high', 'medium', 'low'].includes(driver.confidence)) {
+          throw new Error(`Invalid price driver structure for timeframe: ${timeframe}`);
+        }
+      }
+      
+      // Validate key_articles structure
+      for (const article of data[timeframe].key_articles) {
+        if (!article.title || 
+            !article.url || 
+            !article.source || 
+            !article.confidence || 
+            !['high', 'medium', 'low'].includes(article.confidence)) {
+          throw new Error(`Invalid article structure for timeframe: ${timeframe}`);
+        }
       }
     }
     console.log('Analysis structure validated successfully');
@@ -178,9 +201,11 @@ class OpenAIService {
             role: "system",
             content: `You are a financial analyst expert specializing in future market predictions. Based on these articles about ${symbol} stock, predict whether the stock will go up or down in different timeframes.
 
-            SENTIMENT SCORING GUIDELINES - BE CONSERVATIVE AND STRICT:
+            SENTIMENT SCORING GUIDELINES - ALIGN WITH PERCENTAGE CHANGES AND CONFIDENCE:
             
             EXTREMELY BEARISH (-100 to -75):
+            - Expected price decrease: -15% or more
+            - Very high confidence (80-100%) in severe negative outcome
             - Major company crisis or scandal
             - Bankruptcy risk or severe financial distress
             - Loss of core business or critical market
@@ -188,6 +213,8 @@ class OpenAIService {
             - Industry-wide collapse affecting company
 
             VERY BEARISH (-74 to -50):
+            - Expected price decrease: -10% to -15%
+            - High confidence (60-80%) in significant negative outcome
             - Significant earnings miss
             - Major product failure or recall
             - Loss of key customers/partnerships
@@ -195,6 +222,8 @@ class OpenAIService {
             - Substantial market share loss
 
             MODERATELY BEARISH (-49 to -25):
+            - Expected price decrease: -5% to -10%
+            - Moderate confidence (40-60%) in negative outcome
             - Missed earnings expectations
             - Increased competition
             - Minor legal/regulatory issues
@@ -202,6 +231,8 @@ class OpenAIService {
             - Negative analyst coverage
 
             SLIGHTLY BEARISH (-24 to -1):
+            - Expected price decrease: -1% to -5%
+            - Lower confidence (20-40%) in negative outcome
             - Minor setbacks
             - Short-term challenges
             - Cautious guidance
@@ -209,12 +240,15 @@ class OpenAIService {
             - Mixed analyst opinions
 
             NEUTRAL (0):
-            - Balanced positive and negative news
+            - Expected price change: -1% to +1%
+            - Balanced positive and negative factors
             - No significant developments
             - Stable market position
             - Meeting expectations
 
             SLIGHTLY BULLISH (+1 to +24):
+            - Expected price increase: +1% to +5%
+            - Lower confidence (20-40%) in positive outcome
             - Minor positive developments
             - Meeting expectations with optimism
             - Favorable market conditions
@@ -222,6 +256,8 @@ class OpenAIService {
             - Small competitive advantages
 
             MODERATELY BULLISH (+25 to +49):
+            - Expected price increase: +5% to +10%
+            - Moderate confidence (40-60%) in positive outcome
             - Strong earnings meet
             - New product success
             - Market share gains
@@ -229,6 +265,8 @@ class OpenAIService {
             - Multiple analyst upgrades
 
             VERY BULLISH (+50 to +74):
+            - Expected price increase: +10% to +15%
+            - High confidence (60-80%) in significant positive outcome
             - Significant earnings beat
             - Major market share gains
             - Strategic acquisition/merger
@@ -236,6 +274,8 @@ class OpenAIService {
             - Industry leadership position
 
             EXTREMELY BULLISH (+75 to +100):
+            - Expected price increase: +15% or more
+            - Very high confidence (80-100%) in exceptional positive outcome
             - Transformative breakthrough/innovation
             - Exceptional financial results
             - Market dominance achievement
@@ -243,25 +283,33 @@ class OpenAIService {
             - Revolutionary industry disruption
 
             IMPORTANT RULES:
-            1. Scores above +/-75 should be RARE and require EXCEPTIONAL circumstances
-            2. Most scores should fall in the -30 to +30 range for typical news
-            3. Consider both magnitude AND certainty of impacts
-            4. Multiple negative factors are required for very negative scores
-            5. Multiple positive factors are required for very positive scores
-            6. Be skeptical of overly optimistic projections
-            7. Weight concrete developments more than speculative ones
-            8. Sentiment scores must be integers without any + sign prefix (e.g., use 20 not +20)
+            1. Sentiment score MUST directly correlate with expected percentage change
+            2. Incorporate confidence level into both sentiment score and analysis
+            3. Higher confidence should push score toward extremes, lower confidence toward center
+            4. When calculating sentiment, use this formula: Base sentiment × Confidence factor
+            5. For each timeframe, longer periods may have higher percentage changes but require stronger evidence
+            6. 7-day predictions should be most conservative, 6-month can be more significant if evidence supports it
+            7. Sentiment scores must be integers without any + sign prefix (e.g., use 20 not +20)
+            8. Expected_change_percent must include + or - prefix (e.g., "+5%" or "-3%")
+            9. Include confidence level in both the sentiment calculation and in article analysis
 
-            For each timeframe, explicitly state whether you think the stock will go up or down based on the articles, and by approximately what percentage.
+            For each timeframe, explicitly state whether you think the stock will go up or down based on the articles, by what percentage, and your confidence level in that prediction.
 
             Return ONLY a JSON object in this exact format:
             {
               "7days": {
                 "sentiment": <number between -100 and 100 without + prefix>,
                 "direction": "up" | "down" | "neutral",
-                "expected_change_percent": "<estimated percentage change>",
+                "expected_change_percent": "<estimated percentage change with + or - prefix>",
+                "confidence_level": "<percentage between 0-100>",
                 "summary": "<prediction for next 7 days including whether stock will go up or down>",
-                "price_drivers": ["<event 1>", "<event 2>", ...],
+                "price_drivers": [
+                  {
+                    "factor": "<driver name>",
+                    "impact": "positive" | "negative" | "neutral",
+                    "confidence": "high" | "medium" | "low"
+                  }
+                ],
                 "key_articles": [
                   {
                     "title": "<article title>",
@@ -284,8 +332,9 @@ class OpenAIService {
             - Provide comprehensive analysis for each timeframe and article
             - Include at least 5 key - most relevant articles total for each timeframe when available
             - Ensure all text fields are properly quoted and there are no trailing commas
-            - Be conservative with sentiment scores
-            - Justify extreme scores with concrete evidence
+            - Be conservative with sentiment scores for shorter timeframes
+            - Align sentiment scores directly with expected percentage changes
+            - Explicitly include confidence level for each prediction and price driver
             - Make sure sentiment scores are integers without + signs (e.g., 20 not +20)
             - Clearly state if you think the stock will go up or down in each timeframe
             
