@@ -124,6 +124,29 @@ class NewsCache {
       return 0;
     }
   }
+
+  /**
+   * Clear cache for a specific symbol
+   * @param {string} symbol - Stock symbol
+   * @returns {Promise<number>} - Number of deleted entries
+   */
+  static async clearBySymbol(symbol) {
+    try {
+      const result = await NewsCacheModel.deleteMany({
+        symbol: symbol.toUpperCase()
+      });
+      
+      const count = result.deletedCount;
+      if (count > 0) {
+        console.log(`Cleared cache for symbol ${symbol}: ${count} entries deleted`);
+      }
+      
+      return count;
+    } catch (error) {
+      console.error(`Error clearing cache for symbol ${symbol}:`, error);
+      return 0;
+    }
+  }
 }
 
 module.exports = NewsCache; 

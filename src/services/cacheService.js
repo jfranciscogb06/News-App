@@ -158,7 +158,7 @@ class CacheService {
       console.log(`Starting refresh of cache group ${group.id} with ${group.stocks.length} stocks`);
       
       // Clear cache for this group's stocks
-      this.clearCacheForStocks(group.stocks);
+      await this.clearCacheForStocks(group.stocks);
       
       // Process in batches to avoid overwhelming the system
       await this.processBatchesInParallel(group.stocks, MAX_CONCURRENT_REQUESTS);
@@ -182,18 +182,33 @@ class CacheService {
    * Clear cache for specific stocks
    * @param {Array<string>} stocks - Array of stock symbols to clear from cache
    */
-  clearCacheForStocks(stocks) {
-    let clearedCount = 0;
-    
-    for (const symbol of stocks) {
-      if (popularStocksCache.has(symbol)) {
-        popularStocksCache.delete(symbol);
-        clearedCount++;
+  async clearCacheForStocks(stocks) {
+    try {
+      let memClearedCount = 0;
+      let dbClearedCount = 0;
+      
+      // Clear in-memory cache
+      for (const symbol of stocks) {
+        if (popularStocksCache.has(symbol)) {
+          popularStocksCache.delete(symbol);
+          memClearedCount++;
+        }
       }
-    }
-    
-    if (clearedCount > 0) {
-      console.log(`Cleared ${clearedCount} stocks from cache`);
+      
+      // Clear MongoDB cache
+      const NewsCache = require('../models/newsCache');
+      for (const symbol of stocks) {
+        const result = await NewsCache.clearBySymbol(symbol);
+        if (result > 0) {
+          dbClearedCount++;
+        }
+      }
+      
+      if (memClearedCount > 0 || dbClearedCount > 0) {
+        console.log(`Cleared ${memClearedCount} stocks from memory cache and ${dbClearedCount} from MongoDB`);
+      }
+    } catch (error) {
+      console.error('Error clearing cache for stocks:', error);
     }
   }
 
@@ -259,7 +274,12 @@ class CacheService {
       
       // Store in memory cache
       popularStocksCache.set(symbol, analysis);
-      console.log(`Cached ${symbol} in popular stocks cache`);
+      console.log(`Cached ${symbol} in popular stocks cache (memory)`);
+      
+      // Also save to MongoDB for persistence
+      const NewsCache = require('../models/newsCache');
+      await NewsCache.save(symbol, analysis);
+      console.log(`Cached ${symbol} in MongoDB`);
     } catch (error) {
       console.error(`Error caching ${symbol}:`, error);
     }
