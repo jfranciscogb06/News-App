@@ -1,32 +1,41 @@
-const mongoose = require('mongoose');
-const db = require('../utils/db');
+const { Pool } = require('pg');
+const config = require('../config/config');
 
-// Define the schema for news cache
-const newsCacheSchema = new mongoose.Schema({
-  symbol: {
-    type: String,
-    required: true,
-    uppercase: true,
-    trim: true,
-    index: true
-  },
-  data: {
-    type: mongoose.Schema.Types.Mixed,
-    required: true
-  },
-  created_at: {
-    type: Date,
-    default: Date.now
-  },
-  expires_at: {
-    type: Date,
-    required: true,
-    index: true
+// Create a connection pool
+const pool = new Pool({
+  connectionString: config.database.url,
+  ssl: {
+    rejectUnauthorized: false // Required for Render's PostgreSQL
   }
 });
 
-// Create the model
-const NewsCacheModel = mongoose.model('NewsCache', newsCacheSchema);
+// Initialize database tables
+async function initDatabase() {
+  try {
+    // Create news_cache table if it doesn't exist
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS news_cache (
+        id SERIAL PRIMARY KEY,
+        symbol VARCHAR(20) NOT NULL,
+        data JSONB NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMP NOT NULL
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_news_cache_symbol ON news_cache(symbol);
+      CREATE INDEX IF NOT EXISTS idx_news_cache_expires_at ON news_cache(expires_at);
+    `);
+    
+    console.log('Database tables initialized successfully');
+    return true;
+  } catch (error) {
+    console.error('Error initializing database tables:', error);
+    return false;
+  }
+}
+
+// Initialize the database when this module is loaded
+initDatabase().catch(err => console.error('Error initializing database:', err));
 
 class NewsCache {
   /**
@@ -36,14 +45,14 @@ class NewsCache {
    */
   static async getBySymbol(symbol) {
     try {
-      const result = await NewsCacheModel.findOne({
-        symbol: symbol.toUpperCase(),
-        expires_at: { $gt: new Date() }
-      });
+      const result = await pool.query(
+        'SELECT data FROM news_cache WHERE symbol = $1 AND expires_at > NOW()',
+        [symbol.toUpperCase()]
+      );
       
-      if (result) {
+      if (result.rows.length > 0) {
         console.log(`Cache hit for symbol: ${symbol}`);
-        return result.data;
+        return result.rows[0].data;
       }
       
       console.log(`Cache miss for symbol: ${symbol}`);
@@ -63,19 +72,14 @@ class NewsCache {
    */
   static async save(symbol, data, ttlHours = 24) {
     try {
-      // Calculate expiration date
-      const expiresAt = new Date();
-      expiresAt.setHours(expiresAt.getHours() + ttlHours);
-      
       // Delete any existing cache for this symbol
-      await NewsCacheModel.deleteMany({ symbol: symbol.toUpperCase() });
+      await pool.query('DELETE FROM news_cache WHERE symbol = $1', [symbol.toUpperCase()]);
       
       // Insert new cache entry
-      await NewsCacheModel.create({
-        symbol: symbol.toUpperCase(),
-        data,
-        expires_at: expiresAt
-      });
+      await pool.query(
+        'INSERT INTO news_cache (symbol, data, expires_at) VALUES ($1, $2, NOW() + interval \'1 hour\' * $3)',
+        [symbol.toUpperCase(), data, ttlHours]
+      );
       
       console.log(`Cache saved for symbol: ${symbol}, expires in ${ttlHours} hours`);
       return true;
@@ -91,11 +95,9 @@ class NewsCache {
    */
   static async cleanExpired() {
     try {
-      const result = await NewsCacheModel.deleteMany({
-        expires_at: { $lte: new Date() }
-      });
+      const result = await pool.query('DELETE FROM news_cache WHERE expires_at <= NOW() RETURNING id');
+      const count = result.rows.length;
       
-      const count = result.deletedCount;
       if (count > 0) {
         console.log(`Cleaned ${count} expired cache entries`);
       }
@@ -113,9 +115,9 @@ class NewsCache {
    */
   static async clearAll() {
     try {
-      const result = await NewsCacheModel.deleteMany({});
+      const result = await pool.query('DELETE FROM news_cache RETURNING id');
       
-      const count = result.deletedCount;
+      const count = result.rows.length;
       console.log(`Cleared all cache entries: ${count} entries deleted`);
       
       return count;
@@ -132,11 +134,12 @@ class NewsCache {
    */
   static async clearBySymbol(symbol) {
     try {
-      const result = await NewsCacheModel.deleteMany({
-        symbol: symbol.toUpperCase()
-      });
+      const result = await pool.query(
+        'DELETE FROM news_cache WHERE symbol = $1 RETURNING id',
+        [symbol.toUpperCase()]
+      );
       
-      const count = result.deletedCount;
+      const count = result.rows.length;
       if (count > 0) {
         console.log(`Cleared cache for symbol ${symbol}: ${count} entries deleted`);
       }

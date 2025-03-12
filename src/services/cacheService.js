@@ -1,28 +1,41 @@
-const mongoose = require('mongoose');
-const db = require('../utils/db');
+const { Pool } = require('pg');
+const config = require('../config/config');
 const newsService = require('./newsService');
 
-// Define the schema for popular searches
-const popularSearchSchema = new mongoose.Schema({
-  symbol: {
-    type: String,
-    required: true,
-    uppercase: true,
-    trim: true,
-    index: true
-  },
-  count: {
-    type: Number,
-    default: 1
-  },
-  last_searched: {
-    type: Date,
-    default: Date.now
+// Create a connection pool
+const pool = new Pool({
+  connectionString: config.database.url,
+  ssl: {
+    rejectUnauthorized: false // Required for Render's PostgreSQL
   }
 });
 
-// Create the model
-const PopularSearchModel = mongoose.model('PopularSearch', popularSearchSchema);
+// Initialize database tables
+async function initPopularSearchesTable() {
+  try {
+    // Create popular_searches table if it doesn't exist
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS popular_searches (
+        id SERIAL PRIMARY KEY,
+        symbol VARCHAR(20) NOT NULL UNIQUE,
+        count INTEGER DEFAULT 1,
+        last_searched TIMESTAMP DEFAULT NOW()
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_popular_searches_count ON popular_searches(count);
+      CREATE INDEX IF NOT EXISTS idx_popular_searches_symbol ON popular_searches(symbol);
+    `);
+    
+    console.log('Popular searches table initialized successfully');
+    return true;
+  } catch (error) {
+    console.error('Error initializing popular searches table:', error);
+    return false;
+  }
+}
+
+// Initialize the database when this module is loaded
+initPopularSearchesTable().catch(err => console.error('Error initializing popular searches table:', err));
 
 // In-memory cache for popular stocks
 const popularStocksCache = new Map();
@@ -195,7 +208,7 @@ class CacheService {
         }
       }
       
-      // Clear MongoDB cache
+      // Clear PostgreSQL cache
       const NewsCache = require('../models/newsCache');
       for (const symbol of stocks) {
         const result = await NewsCache.clearBySymbol(symbol);
@@ -205,7 +218,7 @@ class CacheService {
       }
       
       if (memClearedCount > 0 || dbClearedCount > 0) {
-        console.log(`Cleared ${memClearedCount} stocks from memory cache and ${dbClearedCount} from MongoDB`);
+        console.log(`Cleared ${memClearedCount} stocks from memory cache and ${dbClearedCount} from PostgreSQL`);
       }
     } catch (error) {
       console.error('Error clearing cache for stocks:', error);
@@ -276,10 +289,10 @@ class CacheService {
       popularStocksCache.set(symbol, analysis);
       console.log(`Cached ${symbol} in popular stocks cache (memory)`);
       
-      // Also save to MongoDB for persistence
+      // Also save to PostgreSQL for persistence
       const NewsCache = require('../models/newsCache');
       await NewsCache.save(symbol, analysis);
-      console.log(`Cached ${symbol} in MongoDB`);
+      console.log(`Cached ${symbol} in PostgreSQL`);
     } catch (error) {
       console.error(`Error caching ${symbol}:`, error);
     }
@@ -292,12 +305,12 @@ class CacheService {
   async getTop100PopularStocks() {
     try {
       // Get most searched stocks from database
-      const popularSearches = await PopularSearchModel.find()
-        .sort({ count: -1, last_searched: -1 })
-        .limit(100);
+      const popularSearches = await pool.query(
+        'SELECT symbol FROM popular_searches ORDER BY count DESC, last_searched DESC LIMIT 100'
+      );
       
       // Extract symbols
-      let symbols = popularSearches.map(item => item.symbol);
+      let symbols = popularSearches.rows.map(item => item.symbol);
       
       // If we don't have 100 stocks from search history, add default popular stocks
       if (symbols.length < 100) {
@@ -328,14 +341,14 @@ class CacheService {
       const normalizedSymbol = symbol.toUpperCase().trim();
       
       // Update or create a record for this symbol
-      await PopularSearchModel.updateOne(
-        { symbol: normalizedSymbol },
-        { 
-          $inc: { count: 1 },
-          $set: { last_searched: new Date() }
-        },
-        { upsert: true }
-      );
+      await pool.query(`
+        INSERT INTO popular_searches (symbol, count, last_searched)
+        VALUES ($1, 1, NOW())
+        ON CONFLICT (symbol)
+        DO UPDATE SET
+          count = popular_searches.count + 1,
+          last_searched = NOW()
+      `, [normalizedSymbol]);
       
       return true;
     } catch (error) {
