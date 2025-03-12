@@ -161,7 +161,7 @@ class CacheService {
       await this.clearCacheForStocks(group.stocks);
       
       // Process in batches to avoid overwhelming the system
-      await this.processBatchesInParallel(group.stocks, MAX_CONCURRENT_REQUESTS);
+      await this.processBatchesInParallelForGroup(group.stocks, MAX_CONCURRENT_REQUESTS, group.id);
       
       // Update last refreshed timestamp
       group.lastRefreshed = new Date();
@@ -233,6 +233,30 @@ class CacheService {
   }
 
   /**
+   * Process batches of stocks in parallel with limited concurrency for a specific group
+   * @param {Array<string>} stocks - Array of stock symbols
+   * @param {number} concurrency - Maximum number of concurrent requests
+   * @param {number} groupId - Group ID for staggering
+   */
+  async processBatchesInParallelForGroup(stocks, concurrency, groupId) {
+    // Create batches
+    const batches = [];
+    for (let i = 0; i < stocks.length; i += concurrency) {
+      batches.push(stocks.slice(i, i + concurrency));
+    }
+    
+    // Process each batch in parallel
+    for (const batch of batches) {
+      console.log(`Processing batch of ${batch.length} stocks for group ${groupId}...`);
+      
+      // Process all stocks in current batch concurrently
+      await Promise.all(
+        batch.map(symbol => this.cacheStockData(symbol, groupId))
+      );
+    }
+  }
+
+  /**
    * Process batches of stocks in parallel with limited concurrency
    * @param {Array<string>} stocks - Array of stock symbols
    * @param {number} concurrency - Maximum number of concurrent requests
@@ -258,8 +282,9 @@ class CacheService {
   /**
    * Cache data for a single stock
    * @param {string} symbol - Stock symbol
+   * @param {number} groupId - Group ID for additional staggering (optional)
    */
-  async cacheStockData(symbol) {
+  async cacheStockData(symbol, groupId = null) {
     try {
       console.log(`Background caching for ${symbol}...`);
       
@@ -276,10 +301,17 @@ class CacheService {
       popularStocksCache.set(symbol, analysis);
       console.log(`Cached ${symbol} in popular stocks cache (memory)`);
       
-      // Also save to MongoDB for persistence
+      // Calculate base TTL with additional variation based on group ID
+      let baseTtlMinutes = 30;
+      if (groupId) {
+        // Add group-based variation (1-5 minutes) to further stagger different groups
+        baseTtlMinutes = 30 + ((groupId - 1) * 2);
+      }
+      
+      // Also save to MongoDB for persistence with the staggered TTL
       const NewsCache = require('../models/newsCache');
-      await NewsCache.save(symbol, analysis);
-      console.log(`Cached ${symbol} in MongoDB`);
+      await NewsCache.save(symbol, analysis, baseTtlMinutes);
+      console.log(`Cached ${symbol} in MongoDB with base TTL of ${baseTtlMinutes} minutes`);
     } catch (error) {
       console.error(`Error caching ${symbol}:`, error);
     }

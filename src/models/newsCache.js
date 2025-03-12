@@ -55,17 +55,21 @@ class NewsCache {
   }
 
   /**
-   * Save news analysis to cache
+   * Save news analysis to cache with staggered expiration
    * @param {string} symbol - Stock symbol
    * @param {Object} data - Analysis data to cache
-   * @param {number} ttlHours - Time to live in hours (default: 24)
+   * @param {number} ttlMinutes - Base time to live in minutes (default: 30)
    * @returns {Promise<boolean>} - Success status
    */
-  static async save(symbol, data, ttlHours = 24) {
+  static async save(symbol, data, ttlMinutes = 30) {
     try {
-      // Calculate expiration date
+      // Add a random offset (0-10 minutes) to stagger expirations
+      const randomOffsetMinutes = Math.floor(Math.random() * 10);
+      const totalMinutes = ttlMinutes + randomOffsetMinutes;
+      
+      // Calculate expiration date with the staggered offset
       const expiresAt = new Date();
-      expiresAt.setHours(expiresAt.getHours() + ttlHours);
+      expiresAt.setMinutes(expiresAt.getMinutes() + totalMinutes);
       
       // Delete any existing cache for this symbol
       await NewsCacheModel.deleteMany({ symbol: symbol.toUpperCase() });
@@ -77,7 +81,7 @@ class NewsCache {
         expires_at: expiresAt
       });
       
-      console.log(`Cache saved for symbol: ${symbol}, expires in ${ttlHours} hours`);
+      console.log(`Cache saved for symbol: ${symbol}, expires in ${totalMinutes} minutes (staggered)`);
       return true;
     } catch (error) {
       console.error('Error saving to cache:', error);
