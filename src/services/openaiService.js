@@ -11,23 +11,46 @@ class OpenAIService {
   cleanAndParseResponse(response, context = '') {
     try {
       // Log the raw response for debugging
-      console.log(`Raw ${context} response:`, response);
+      console.log(`Raw ${context} response:`, response.substring(0, 500) + (response.length > 500 ? '...' : ''));
+
+      // Find JSON content with flexible pattern matching
+      let jsonContent = response;
+      
+      // If the response is wrapped in markdown code blocks, extract the content
+      const jsonRegex = /```(?:json)?\s*([\s\S]*?)\s*```/;
+      const match = response.match(jsonRegex);
+      if (match && match[1]) {
+        jsonContent = match[1];
+      }
 
       // Remove any markdown formatting and extra whitespace
-      let cleaned = response.replace(/```json\n?|\n?```/g, '')
-        .replace(/\n\s+/g, '\n')  // Remove extra whitespace at start of lines
-        .replace(/,\s*([}\]])/g, '$1')  // Remove trailing commas
-        .replace(/\s+/g, ' ')  // Normalize whitespace
+      let cleaned = jsonContent
+        .replace(/```json\n?|\n?```/g, '')  // Remove code blocks
+        .replace(/\n\s+/g, '\n')            // Remove extra whitespace at start of lines
+        .replace(/,\s*([}\]])/g, '$1')      // Remove trailing commas
         .trim();
       
       // Fix the + sign issue in sentiment scores
       cleaned = cleaned.replace(/"sentiment":\s*\+(\d+)/g, '"sentiment": $1');
       
+      // Try to fix broken JSON with truncated URLs or content
+      cleaned = this.fixTruncatedJSON(cleaned);
+      
       // Log the cleaned response
-      console.log(`Cleaned ${context} response:`, cleaned);
+      console.log(`Cleaned ${context} response:`, cleaned.substring(0, 500) + (cleaned.length > 500 ? '...' : ''));
 
       // Try to parse the JSON
-      const parsed = JSON.parse(cleaned);
+      let parsed;
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch (parseError) {
+        console.error(`Initial JSON parsing failed: ${parseError.message}`);
+        
+        // Try a more aggressive cleanup approach
+        const sanitized = this.sanitizeJSON(cleaned);
+        console.log(`Sanitized JSON:`, sanitized.substring(0, 200) + (sanitized.length > 200 ? '...' : ''));
+        parsed = JSON.parse(sanitized);
+      }
       
       // Log successful parsing
       console.log(`Successfully parsed ${context} response`);
@@ -35,9 +58,83 @@ class OpenAIService {
       return parsed;
     } catch (error) {
       console.error(`Error parsing ${context} response:`, error);
-      console.error('Raw response:', response);
+      console.error('Raw response (excerpt):', response.substring(0, 200) + '...');
       throw new Error(`Failed to parse ${context} response: ${error.message}`);
     }
+  }
+  
+  // Helper method to fix truncated JSON that may have cut-off URLs or content
+  fixTruncatedJSON(jsonStr) {
+    // Fix unbalanced quotes in URLs or long strings
+    let balanced = jsonStr;
+    let inString = false;
+    let escape = false;
+    let unbalancedPos = -1;
+    
+    for (let i = 0; i < balanced.length; i++) {
+      const char = balanced[i];
+      
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+      
+      if (char === '"') {
+        if (!inString) {
+          inString = true;
+          unbalancedPos = i;
+        } else {
+          inString = false;
+          unbalancedPos = -1;
+        }
+      }
+    }
+    
+    // If we ended with an unbalanced string, add a closing quote
+    if (inString && unbalancedPos >= 0) {
+      balanced = balanced.substring(0, balanced.length) + '"';
+    }
+    
+    // Ensure all objects and arrays are properly closed
+    let openBraces = 0;
+    let openBrackets = 0;
+    
+    for (const char of balanced) {
+      if (char === '{') openBraces++;
+      else if (char === '}') openBraces--;
+      else if (char === '[') openBrackets++;
+      else if (char === ']') openBrackets--;
+    }
+    
+    // Add missing closing braces and brackets
+    while (openBraces > 0) {
+      balanced += '}';
+      openBraces--;
+    }
+    
+    while (openBrackets > 0) {
+      balanced += ']';
+      openBrackets--;
+    }
+    
+    return balanced;
+  }
+  
+  // Helper method to sanitize JSON more aggressively
+  sanitizeJSON(jsonStr) {
+    // Remove any non-JSON characters that might be causing problems
+    return jsonStr
+      .replace(/[\u0000-\u001F]+/g, ' ')  // Remove control characters
+      .replace(/\\[^"\\\/bfnrt]/g, '')    // Remove invalid escapes
+      .replace(/([^\\])\\([^"\\\/bfnrt])/g, '$1') // Remove invalid escapes that follow a character
+      .replace(/,\s*[}\]]/g, ' $&')       // Fix trailing commas (replace with space)
+      .replace(/\s+/g, ' ')               // Normalize whitespace
+      .trim();
   }
 
   validateAnalysisStructure(data) {
@@ -75,18 +172,31 @@ class OpenAIService {
             !['high', 'medium', 'low'].includes(article.confidence)) {
           throw new Error(`Invalid article structure for timeframe: ${timeframe}`);
         }
+        
+        // Check for the new impact_summary field - it's optional but should be a string if present
+        if (article.impact_summary && typeof article.impact_summary !== 'string') {
+          throw new Error(`Invalid impact_summary in article for timeframe: ${timeframe}`);
+        }
+        
+        // Check for the new publishedAt field - it's optional but should be a string if present
+        if (article.publishedAt && typeof article.publishedAt !== 'string') {
+          throw new Error(`Invalid publishedAt in article for timeframe: ${timeframe}`);
+        }
       }
     }
     console.log('Analysis structure validated successfully');
     return true;
   }
 
-  async selectRelevantArticles(symbol, articles) {
+  async selectRelevantArticles(symbol, articles, maxArticles = 20) {
     try {
-      // Extract just the titles for initial review
-      const articleTitles = articles.map(article => ({
+      // Include more article data for better selection
+      const articleData = articles.map(article => ({
         title: article.title,
-        url: article.url
+        url: article.url,
+        description: article.description ? article.description.substring(0, 200) : '',
+        publishedAt: article.publishedAt,
+        source: article.source
       }));
 
       const analysis = await this.openai.chat.completions.create({
@@ -94,7 +204,7 @@ class OpenAIService {
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select only the most relevant ones that could impact future stock performance.
+            content: `You are a financial article filter and analyst. Your task is to review these article headlines about ${symbol} stock and select the most relevant ones that could impact future stock performance. You are ONLY filtering the provided articles, not searching for new ones.
 
             Select titles that:
             - Are specifically about or closely related to ${symbol} or directly impact it
@@ -102,35 +212,59 @@ class OpenAIService {
             - Indicate potential stock price impact
             - Discuss future predictions or plans
 
+            For each selected article, provide:
+            1. A detailed explanation (2-3 sentences) of why this article is significant for the stock
+            2. An assessment of the article's potential impact (positive, negative, or neutral)
+            3. The specific factors mentioned in the article that could influence stock price
+
             Return a JSON array of selected articles:
             {
               "selected_articles": [
                 {
                   "url": "<article url>",
-                  "relevance": "<one sentence explanation>"
+                  "title": "<article title>",
+                  "publishedAt": "<article publication date>",
+                  "source": "<article source>",
+                  "impact_summary": "<detailed explanation of impact>",
+                  "sentiment": "<positive/negative/neutral>",
+                  "key_factors": ["<factor 1>", "<factor 2>"]
                 }
               ]
             }
 
-            Only analyze the titles. Do not include any other text in your response.`
+            Select up to ${maxArticles} articles if that many relevant ones are available. Prioritize articles with clear impact on stock performance. Do not fabricate any information not present in the articles.`
           },
           {
             role: "user",
-            content: JSON.stringify(articleTitles)
+            content: JSON.stringify(articleData)
           }
         ],
-        temperature: 0.5
+        temperature: 0.5,
+        max_tokens: 3000
       });
 
       const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
       
-      // Filter the original articles based on selected URLs
-      return articles.filter(article => 
-        result.selected_articles.some(selected => selected.url === article.url)
-      );
+      // Enrich the original articles with the detailed impact analysis
+      const enrichedArticles = [];
+      for (const selectedArticle of result.selected_articles) {
+        const originalArticle = articles.find(a => a.url === selectedArticle.url);
+        if (originalArticle) {
+          enrichedArticles.push({
+            ...originalArticle,
+            impact_summary: selectedArticle.impact_summary || '',
+            sentiment: selectedArticle.sentiment || 'neutral',
+            key_factors: selectedArticle.key_factors || []
+          });
+        }
+      }
+      
+      return enrichedArticles;
     } catch (error) {
       console.error('Error selecting relevant articles:', error);
-      throw error;
+      // In case of error, return the original articles (limited to max) instead of failing
+      console.log('Returning original articles due to filtering error');
+      return articles.slice(0, maxArticles);
     }
   }
 
@@ -194,208 +328,215 @@ class OpenAIService {
     try {
       console.log(`Starting future prediction analysis for ${symbol} with ${articles.length} articles`);
 
+      // Organize articles by timeframe relevance
+      const timeframeArticles = this.organizeArticlesByTimeframe(articles);
+      
+      const timeframeDetails = Object.entries(timeframeArticles)
+        .map(([timeframe, articles]) => `${timeframe}: ${articles.length} articles`)
+        .join(', ');
+      
+      console.log(`Timeframe distribution: ${timeframeDetails}`);
+
       const analysis = await this.openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: `You are a financial analyst expert specializing in future market predictions. Based on these articles about ${symbol} stock, predict whether the stock will go up or down in different timeframes.
+            content: `You are a financial analyst expert. Analyze the provided news articles about ${symbol} stock to predict future price movements. 
 
-            SENTIMENT SCORING GUIDELINES - ALIGN WITH PERCENTAGE CHANGES AND CONFIDENCE:
+            IMPORTANT: ONLY analyze the provided articles. DO NOT search for or reference any external information not contained in these articles.
             
-            EXTREMELY BEARISH (-100 to -75):
-            - Expected price decrease: -15% or more
-            - Very high confidence (80-100%) in severe negative outcome
-            - Major company crisis or scandal
-            - Bankruptcy risk or severe financial distress
-            - Loss of core business or critical market
-            - Multiple severe regulatory actions
-            - Industry-wide collapse affecting company
-
-            VERY BEARISH (-74 to -50):
-            - Expected price decrease: -10% to -15%
-            - High confidence (60-80%) in significant negative outcome
-            - Significant earnings miss
-            - Major product failure or recall
-            - Loss of key customers/partnerships
-            - Serious legal/regulatory issues
-            - Substantial market share loss
-
-            MODERATELY BEARISH (-49 to -25):
-            - Expected price decrease: -5% to -10%
-            - Moderate confidence (40-60%) in negative outcome
-            - Missed earnings expectations
-            - Increased competition
-            - Minor legal/regulatory issues
-            - Declining market share
-            - Negative analyst coverage
-
-            SLIGHTLY BEARISH (-24 to -1):
-            - Expected price decrease: -1% to -5%
-            - Lower confidence (20-40%) in negative outcome
-            - Minor setbacks
-            - Short-term challenges
-            - Cautious guidance
-            - Market uncertainty
-            - Mixed analyst opinions
-
-            NEUTRAL (0):
-            - Expected price change: -1% to +1%
-            - Balanced positive and negative factors
-            - No significant developments
-            - Stable market position
-            - Meeting expectations
-
-            SLIGHTLY BULLISH (+1 to +24):
-            - Expected price increase: +1% to +5%
-            - Lower confidence (20-40%) in positive outcome
-            - Minor positive developments
-            - Meeting expectations with optimism
-            - Favorable market conditions
-            - Positive analyst comments
-            - Small competitive advantages
-
-            MODERATELY BULLISH (+25 to +49):
-            - Expected price increase: +5% to +10%
-            - Moderate confidence (40-60%) in positive outcome
-            - Strong earnings meet
-            - New product success
-            - Market share gains
-            - Positive industry trends
-            - Multiple analyst upgrades
-
-            VERY BULLISH (+50 to +74):
-            - Expected price increase: +10% to +15%
-            - High confidence (60-80%) in significant positive outcome
-            - Significant earnings beat
-            - Major market share gains
-            - Strategic acquisition/merger
-            - Strong competitive advantage
-            - Industry leadership position
-
-            EXTREMELY BULLISH (+75 to +100):
-            - Expected price increase: +15% or more
-            - Very high confidence (80-100%) in exceptional positive outcome
-            - Transformative breakthrough/innovation
-            - Exceptional financial results
-            - Market dominance achievement
-            - Game-changing acquisition/partnership
-            - Revolutionary industry disruption
-
-            IMPORTANT RULES:
-            1. Sentiment score MUST directly correlate with expected percentage change
-            2. Incorporate confidence level into both sentiment score and analysis
-            3. Higher confidence should push score toward extremes, lower confidence toward center
-            4. When calculating sentiment, use this formula: Base sentiment × Confidence factor
-            5. For each timeframe, longer periods may have higher percentage changes but require stronger evidence
-            6. 7-day predictions should be most conservative, 6-month can be more significant if evidence supports it
-            7. Sentiment scores must be integers without any + sign prefix (e.g., use 20 not +20)
-            8. Expected_change_percent must include + or - prefix (e.g., "+5%" or "-3%")
-            9. Include confidence level in both the sentiment calculation and in article analysis
-
-            For each timeframe, explicitly state whether you think the stock will go up or down based on the articles, by what percentage, and your confidence level in that prediction.
-
-            Return ONLY a JSON object in this exact format:
+            The articles have been pre-filtered and categorized by their relevance to different timeframes: 7 days, 1 month, 3 months, and 6 months.
+            Pay close attention to which timeframe each article is most relevant for, and use that information in your analysis.
+            
+            For each timeframe, provide:
+            1. A concise sentiment score from -10 to +10 (negative to positive)
+            2. Expected price direction (up, down, or neutral)
+            3. Expected percentage change (e.g., "2-5%", "minimal", etc.)
+            4. Confidence level (high, medium, low)
+            5. A brief summary capturing key insights
+            6. 3-5 primary price drivers
+            7. 3-5 key articles supporting your analysis (include publication dates)
+            
+            Return your analysis as a valid JSON object exactly matching this structure:
             {
               "7days": {
-                "sentiment": <number between -100 and 100 without + prefix>,
-                "direction": "up" | "down" | "neutral",
-                "expected_change_percent": "<estimated percentage change with + or - prefix>",
-                "confidence_level": "<percentage between 0-100>",
-                "summary": "<prediction for next 7 days including whether stock will go up or down>",
+                "sentiment": <number from -10 to 10>,
+                "direction": <"up", "down", or "neutral">,
+                "expected_change_percent": <string estimate>,
+                "confidence_level": <"high", "medium", or "low">,
+                "summary": <string>,
                 "price_drivers": [
                   {
-                    "factor": "<driver name>",
-                    "impact": "positive" | "negative" | "neutral",
-                    "confidence": "high" | "medium" | "low"
+                    "factor": <string>,
+                    "impact": <"positive", "negative", or "neutral">,
+                    "confidence": <"high", "medium", or "low">
                   }
                 ],
                 "key_articles": [
                   {
-                    "title": "<article title>",
-                    "url": "<article url>",
-                    "publishedAt": "<article publishedAt date>",
-                    "source": "<article source>",
-                    "predicted_impact": "<detailed impact analysis>",
-                    "confidence": "high" | "medium" | "low",
-                    "potential_price_effect": "<price prediction with reasoning>",
-                    "detailed_analysis": "<comprehensive analysis>"
+                    "title": <string>,
+                    "url": <string>,
+                    "publishedAt": <string - publication date>,
+                    "source": <string>,
+                    "impact_summary": <string - detailed explanation of impact>,
+                    "confidence": <"high", "medium", or "low">
                   }
                 ]
               },
-              "1month": <same structure as 7days>,
-              "3months": <same structure as 7days>,
-              "6months": <same structure as 7days>
+              "1month": { <same structure as 7days> },
+              "3months": { <same structure as 7days> },
+              "6months": { <same structure as 7days> }
             }
             
-            Requirements:
-            - Provide comprehensive analysis for each timeframe and article
-            - Include at least 5 key - most relevant articles total for each timeframe when available
-            - Ensure all text fields are properly quoted and there are no trailing commas
-            - Be conservative with sentiment scores for shorter timeframes
-            - Align sentiment scores directly with expected percentage changes
-            - Explicitly include confidence level for each prediction and price driver
-            - Make sure sentiment scores are integers without + signs (e.g., 20 not +20)
-            - Clearly state if you think the stock will go up or down in each timeframe
-            
-            Do not include any other text or formatting in your response.`
+            Return ONLY the structured JSON with no other text.`
           },
           {
             role: "user",
-            content: JSON.stringify({
-              articles,
-              totalCount: articles.length
-            })
+            content: JSON.stringify(articles)
           }
         ],
-        temperature: 0.7,
-        max_tokens: 8000
+        temperature: 0.5,
+        max_tokens: 4000
       });
 
       if (!analysis.choices?.[0]?.message?.content) {
-        throw new Error('Empty response from OpenAI');
+        throw new Error('Invalid response from OpenAI');
       }
 
       const result = this.cleanAndParseResponse(analysis.choices[0].message.content, 'analysis');
-
-      console.log('Validating analysis structure...');
-      this.validateAnalysisStructure(result);
-      console.log('Analysis structure validated successfully');
-
-      return result;
+      
+      // Validate structure of the response
+      try {
+        this.validateAnalysisStructure(result);
+        return result;
+      } catch (error) {
+        console.error('Invalid analysis structure:', error);
+        throw new Error(`Invalid analysis structure: ${error.message}`);
+      }
     } catch (error) {
       console.error('Error in analyzeArticles:', error);
-      throw new Error(`Analysis failed: ${error.message}`);
+      throw new Error(`Failed to analyze articles: ${error.message}`);
     }
   }
-
-  async findArticleDate(pageText, url) {
-    try {
-      const analysis = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `You are an expert at finding publication dates in article text. 
-            Find the most likely publication date in the provided text.
-            Return ONLY a JSON object with the date in this format:
-            {
-              "date": "<Weekday, Month Day, Year>"
-            }
-            If no date is found, return null for the date value.`
-          },
-          {
-            role: "user",
-            content: `Find the publication date in this text from ${url}:\n\n${pageText}`
+  
+  // Organize articles by timeframe relevance
+  organizeArticlesByTimeframe(articles) {
+    // Initialize result object with arrays for each timeframe
+    const result = {
+      '7days': [],
+      '1month': [],
+      '3months': [],
+      '6months': []
+    };
+    
+    // Process each article to determine its best matching timeframe(s)
+    articles.forEach(article => {
+      // If article has explicit timeframe scores, use them
+      if (article.timeframeScores && Object.keys(article.timeframeScores).length > 0) {
+        // Find the timeframe(s) with the highest score
+        const scores = article.timeframeScores;
+        const maxScore = Math.max(...Object.values(scores));
+        
+        // Assign to all timeframes where the score is at least 90% of the max
+        let assigned = false;
+        for (const [timeframe, score] of Object.entries(scores)) {
+          if (score >= maxScore * 0.9) {
+            result[timeframe].push(article);
+            assigned = true;
           }
-        ],
-        temperature: 0.3
-      });
-
-      return JSON.parse(analysis.choices[0].message.content);
-    } catch (error) {
-      console.error('Error finding article date:', error);
-      return null;
+        }
+        
+        // If not assigned to any timeframe (shouldn't happen), use a fallback method
+        if (!assigned) {
+          this.assignArticleByFallback(article, result);
+        }
+      }
+      // If article has timeframeRelevance data, use it
+      else if (article.timeframeRelevance && Object.keys(article.timeframeRelevance).length > 0) {
+        const relevance = article.timeframeRelevance;
+        const maxRelevance = Math.max(...Object.values(relevance));
+        
+        // Assign to all timeframes where the relevance is at least 80% of the max
+        let assigned = false;
+        for (const [timeframe, score] of Object.entries(relevance)) {
+          if (score >= maxRelevance * 0.8) {
+            result[timeframe].push(article);
+            assigned = true;
+          }
+        }
+        
+        // If not assigned to any timeframe, use fallback
+        if (!assigned) {
+          this.assignArticleByFallback(article, result);
+        }
+      } 
+      // If no explicit data, use fallback assignment method
+      else {
+        this.assignArticleByFallback(article, result);
+      }
+    });
+    
+    return result;
+  }
+  
+  // Fallback method for assigning articles to timeframes based on content and date
+  assignArticleByFallback(article, result) {
+    // Check publication date
+    const now = new Date();
+    let daysSincePublished = 30; // Default if we can't determine
+    
+    if (article.publishedDate) {
+      daysSincePublished = Math.floor((now - new Date(article.publishedDate)) / (1000 * 60 * 60 * 24));
+    } else if (article.pubDate) {
+      daysSincePublished = Math.floor((now - new Date(article.pubDate)) / (1000 * 60 * 60 * 24));
+    } else if (article.publishedAt) {
+      // Try to parse date from string
+      try {
+        daysSincePublished = Math.floor((now - new Date(article.publishedAt)) / (1000 * 60 * 60 * 24));
+      } catch (e) {
+        // Keep default
+      }
+    }
+    
+    // Check content for timeframe keywords
+    const content = (article.title + ' ' + (article.description || '')).toLowerCase();
+    
+    // Define timeframe-related terms
+    const timeframeKeywords = {
+      '7days': ['today', 'yesterday', 'this week', 'next week', 'days', 'short term'],
+      '1month': ['this month', 'next month', 'monthly', 'weeks', 'short term'],
+      '3months': ['quarter', 'quarterly', 'q1', 'q2', 'q3', 'q4', 'months', 'medium term'],
+      '6months': ['long term', 'year', 'annual', 'future', 'roadmap', 'strategy']
+    };
+    
+    // Check for explicit timeframe mentions
+    let assignedByKeyword = false;
+    for (const [timeframe, keywords] of Object.entries(timeframeKeywords)) {
+      for (const keyword of keywords) {
+        if (content.includes(keyword)) {
+          result[timeframe].push(article);
+          assignedByKeyword = true;
+          break;
+        }
+      }
+      if (assignedByKeyword) break;
+    }
+    
+    // If no keywords matched, assign based on recency
+    if (!assignedByKeyword) {
+      if (daysSincePublished < 3) {
+        result['7days'].push(article);
+      } else if (daysSincePublished < 7) {
+        result['7days'].push(article);
+        result['1month'].push(article);
+      } else if (daysSincePublished < 30) {
+        result['1month'].push(article);
+        result['3months'].push(article);
+      } else {
+        result['3months'].push(article);
+        result['6months'].push(article);
+      }
     }
   }
 }

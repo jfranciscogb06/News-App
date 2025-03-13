@@ -8,6 +8,13 @@ module.exports = {
   newsapi: {
     apiKey: process.env.NEWSAPI_API_KEY
   },
+  google: {
+    apiKey: process.env.GOOGLE_API_KEY,
+    searchEngineId: process.env.GOOGLE_SEARCH_ENGINE_ID || '' // Optional for now
+  },
+  serpapi: {
+    apiKey: process.env.SERPAPI_API_KEY
+  },
   polygon: {
     apiKey: process.env.POLYGONIO_API_KEY
   },

@@ -41,8 +41,14 @@ class StockController {
         return res.json(result);
       }
       
-      // If not in cache, collect and analyze news
-      const analysis = await newsService.collectAndAnalyzeNews(symbol);
+      // If not in cache, collect news using enhanced service
+      console.log(`Collecting news for ${symbol}...`);
+      const { articles, count } = await newsService.collectAndAnalyzeNews(symbol, 30);
+      
+      console.log(`Collected ${count} articles for ${symbol}, sending to OpenAI for analysis...`);
+      
+      // Use OpenAI to analyze the collected articles
+      const analysis = await openaiService.analyzeArticles(symbol, articles);
       
       // Save to regular cache
       await NewsCache.save(symbol, analysis);
@@ -54,7 +60,8 @@ class StockController {
         symbol,
         timestamp: new Date(),
         analysis,
-        source: 'fresh'
+        source: 'fresh',
+        articleCount: count
       };
 
       res.json(result);
