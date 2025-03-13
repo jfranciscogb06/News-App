@@ -73,7 +73,12 @@ class StockController {
 
   async clearCache(req, res, next) {
     try {
-      // Clear all cache entries
+      // First, stop any ongoing cache processes
+      if (cacheService && typeof cacheService.cancelAllCacheTimers === 'function') {
+        cacheService.cancelAllCacheTimers();
+      }
+      
+      // Clear MongoDB cache
       const deletedCount = await NewsCache.clearAll();
       
       // Clear popular stocks cache if cacheService is available
@@ -82,9 +87,13 @@ class StockController {
         popularCacheCleared = await cacheService.clearPopularCache();
       }
       
+      // Reset any application-level caches or variables
+      global.cacheLastRefreshed = null;
+      
+      // Send response - let the system restart the caching process on its own
       res.json({
         success: true,
-        message: 'Cache cleared successfully',
+        message: 'All caches cleared successfully',
         deletedEntries: deletedCount,
         popularCacheCleared
       });

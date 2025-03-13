@@ -117,10 +117,21 @@ class NewsCache {
    */
   static async clearAll() {
     try {
-      const result = await NewsCacheModel.deleteMany({});
+      // Find all entries before deletion (for logging)
+      const allEntries = await NewsCacheModel.find({}, { symbol: 1 });
+      const symbols = allEntries.map(entry => entry.symbol);
       
+      // Use deleteMany to clear the cache
+      const result = await NewsCacheModel.deleteMany({});
       const count = result.deletedCount;
-      console.log(`Cleared all cache entries: ${count} entries deleted`);
+      
+      // Log detailed information about what was cleared
+      if (count > 0) {
+        console.log(`Cleared all cache entries: ${count} entries deleted`);
+        console.log(`Cleared symbols: ${symbols.join(', ')}`);
+      } else {
+        console.log('No cache entries found to clear');
+      }
       
       return count;
     } catch (error) {

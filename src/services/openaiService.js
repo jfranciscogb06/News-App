@@ -173,154 +173,184 @@ class OpenAIService {
           throw new Error(`Invalid article structure for timeframe: ${timeframe}`);
         }
         
-        // Check for the new impact_summary field - it's optional but should be a string if present
+        // Check for the impact_summary field - it's optional but should be a string if present
         if (article.impact_summary && typeof article.impact_summary !== 'string') {
           throw new Error(`Invalid impact_summary in article for timeframe: ${timeframe}`);
         }
         
-        // Check for the new publishedAt field - it's optional but should be a string if present
+        // Check for the publishedAt field - it's optional but should be a string if present
         if (article.publishedAt && typeof article.publishedAt !== 'string') {
           throw new Error(`Invalid publishedAt in article for timeframe: ${timeframe}`);
         }
       }
     }
+    
     console.log('Analysis structure validated successfully');
     return true;
   }
 
   async selectRelevantArticles(symbol, articles, maxArticles = 20) {
     try {
-      // Include more article data for better selection
-      const articleData = articles.map(article => ({
-        title: article.title,
-        url: article.url,
-        description: article.description ? article.description.substring(0, 200) : '',
-        publishedAt: article.publishedAt,
-        source: article.source
-      }));
-
-      const analysis = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini",
+      console.log(`Selecting most relevant articles for ${symbol}...`);
+      
+      const analysisResponse = await this.openai.chat.completions.create({
+        model: "gpt-3.5-turbo-0125",
         messages: [
           {
             role: "system",
-            content: `You are a financial article filter and analyst. Your task is to review these article headlines about ${symbol} stock and select the most relevant ones that could impact future stock performance. You are ONLY filtering the provided articles, not searching for new ones.
+            content: `You are a financial expert selecting the most informative articles for predicting the future stock price movement of ${symbol}.
 
-            Select titles that:
-            - Are specifically about or closely related to ${symbol} or directly impact it
-            - Suggest developments or events
-            - Indicate potential stock price impact
-            - Discuss future predictions or plans
+Your task is to select articles that have predictive value for stock price movements across different timeframes (7 days, 1 month, 3 months, and 6 months).
 
-            For each selected article, provide:
-            1. A detailed explanation (2-3 sentences) of why this article is significant for the stock
-            2. An assessment of the article's potential impact (positive, negative, or neutral)
-            3. The specific factors mentioned in the article that could influence stock price
+CRITICAL SELECTION CRITERIA:
+1. TIMEFRAME RELEVANCE: Articles discussing events scheduled to occur during a specific timeframe should be selected for that timeframe, REGARDLESS OF WHEN THE ARTICLE WAS PUBLISHED.
+   - Example: An article from January that discusses an earnings release scheduled for March 15th should be selected for a March 13-20 timeframe analysis.
+   - Example: An article discussing "Q3 outlook" would be relevant for the 3-month timeframe even if published weeks earlier.
 
-            Return a JSON array of selected articles:
-            {
-              "selected_articles": [
-                {
-                  "url": "<article url>",
-                  "title": "<article title>",
-                  "publishedAt": "<article publication date>",
-                  "source": "<article source>",
-                  "impact_summary": "<detailed explanation of impact>",
-                  "sentiment": "<positive/negative/neutral>",
-                  "key_factors": ["<factor 1>", "<factor 2>"]
-                }
-              ]
-            }
+2. FAVOR PREDICTIVE VALUE OVER RECENCY: Older articles can have high value if they discuss:
+   - Future product launches, earnings dates, or regulatory decisions
+   - Long-term trends, market shifts, or strategic changes
+   - Developments with ongoing impact (partnerships, acquisitions, restructuring)
+   
+3. SELECT ARTICLES THAT CONTAIN:
+   - Information likely to impact future stock prices
+   - Discussion of fundamentals, product developments, competitive positions, or market trends
+   - Significant corporate developments and strategic changes
+   - Analyst insights with lasting relevance
+   - Meaningful data points for evaluating future performance
+   
+4. For each selected article, provide:
+   - The article URL
+   - A brief explanation of why it's relevant for predicting ${symbol}'s future price movement
+   - Indicate which timeframes (7 days, 1 month, 3 months, 6 months) the article is most relevant for
 
-            Select up to ${maxArticles} articles if that many relevant ones are available. Prioritize articles with clear impact on stock performance. Do not fabricate any information not present in the articles.`
-          },
-          {
-            role: "user",
-            content: JSON.stringify(articleData)
-          }
-        ],
-        temperature: 0.5,
-        max_tokens: 3000
-      });
-
-      const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
-      
-      // Enrich the original articles with the detailed impact analysis
-      const enrichedArticles = [];
-      for (const selectedArticle of result.selected_articles) {
-        const originalArticle = articles.find(a => a.url === selectedArticle.url);
-        if (originalArticle) {
-          enrichedArticles.push({
-            ...originalArticle,
-            impact_summary: selectedArticle.impact_summary || '',
-            sentiment: selectedArticle.sentiment || 'neutral',
-            key_factors: selectedArticle.key_factors || []
-          });
-        }
-      }
-      
-      return enrichedArticles;
-    } catch (error) {
-      console.error('Error selecting relevant articles:', error);
-      // In case of error, return the original articles (limited to max) instead of failing
-      console.log('Returning original articles due to filtering error');
-      return articles.slice(0, maxArticles);
-    }
-  }
-
-  async filterRelevantArticles(symbol, articles) {
-    try {
-      const analysis = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `You are a financial analyst expert. Review these article titles about ${symbol} stock and select the most relevant ones that could impact future stock performance.
-
-            Select articles that:
-            - Indicate upcoming company developments or plans
-            - Suggest potential market-moving events
-            - Reveal industry trends or market shifts that could affect the stock
-            - Discuss future predictions, forecasts, or analyst expectations
-
-            You must return a valid JSON object exactly in this format, with no additional text or formatting:
-            {
-              "selected_articles": {
-                "7days": [<urls of articles relevant to 7-day predictions>],
-                "1month": [<urls of articles relevant to 1-month predictions>],
-                "3months": [<urls of articles relevant to 3-month predictions>],
-                "6months": [<urls of articles relevant to 6-month predictions>]
-              }
-            }`
+Select up to ${maxArticles} articles, prioritizing those with unique insights across different timeframes.`
           },
           {
             role: "user",
             content: JSON.stringify(articles)
           }
         ],
-        temperature: 0.5,
+        temperature: 0.2,
         max_tokens: 2000
       });
 
-      if (!analysis.choices?.[0]?.message?.content) {
-        throw new Error('Invalid response from OpenAI');
+      const response = analysisResponse.choices[0].message.content;
+      console.log("Raw response:", response);
+      
+      // Clean and parse the response
+      let cleanedResponse;
+      try {
+        cleanedResponse = this.cleanAndParseResponse(response, "article selection");
+        console.log("Cleaned response:", cleanedResponse);
+      } catch (error) {
+        console.error("Error cleaning/parsing response:", error);
+        throw new Error(`Failed to parse OpenAI response: ${error.message}`);
       }
-
-      const result = this.cleanAndParseResponse(analysis.choices[0].message.content);
-
-      // Validate the response structure
-      if (!result.selected_articles || 
-          !Array.isArray(result.selected_articles["7days"]) ||
-          !Array.isArray(result.selected_articles["1month"]) ||
-          !Array.isArray(result.selected_articles["3months"]) ||
-          !Array.isArray(result.selected_articles["6months"])) {
-        throw new Error('Invalid response structure from OpenAI');
+      
+      // Validate the structure of the response
+      if (!cleanedResponse.selected_articles || !Array.isArray(cleanedResponse.selected_articles)) {
+        throw new Error("Invalid response format: selected_articles array not found");
       }
-
-      return result;
+      
+      console.log(`OpenAI selected ${cleanedResponse.selected_articles.length} most relevant articles from ${articles.length}`);
+      
+      // Return the selected articles
+      return cleanedResponse.selected_articles;
     } catch (error) {
-      console.error('Error in filterRelevantArticles:', error);
-      throw new Error(`Failed to filter articles: ${error.message}`);
+      console.error("Error in selectRelevantArticles:", error);
+      // Fallback to a simpler filtering approach if OpenAI fails
+      console.log("Falling back to simple relevance filtering...");
+      return this.filterRelevantArticles(symbol, articles);
+    }
+  }
+
+  async filterRelevantArticles(symbol, articles) {
+    try {
+      console.log(`Using fallback filtering for ${symbol} with ${articles.length} articles`);
+      
+      // Check if we need to limit the number of articles
+      if (articles.length <= 20) {
+        return articles;
+      }
+      
+      // First, organize by published date (if available)
+      const articlesWithDates = articles.filter(a => a.publishedAt);
+      const articlesWithoutDates = articles.filter(a => !a.publishedAt);
+      
+      // Sort articles with dates by recency
+      articlesWithDates.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+      
+      // Look for timeframe-specific keywords in titles and descriptions
+      const timeframeKeywords = {
+        '7days': ['next week', 'this week', 'upcoming', 'imminent', 'short term', 'days ahead', 'week ahead', 'weekly'],
+        '1month': ['next month', 'this month', 'monthly outlook', 'month ahead', 'near term', '30 day', 'four weeks'],
+        '3months': ['quarter', 'quarterly', 'Q1', 'Q2', 'Q3', 'Q4', '3 month', 'three month', 'medium term'],
+        '6months': ['half year', 'six month', '6 month', 'long term', 'outlook', 'future', 'year end', 'year ahead']
+      };
+      
+      // Function to calculate timeframe relevance score
+      const getTimeframeScore = (article) => {
+        const text = `${article.title || ''} ${article.description || ''}`.toLowerCase();
+        const scores = {};
+        
+        // Check for timeframe-specific keywords
+        Object.entries(timeframeKeywords).forEach(([timeframe, keywords]) => {
+          scores[timeframe] = 0;
+          keywords.forEach(keyword => {
+            if (text.includes(keyword.toLowerCase())) {
+              scores[timeframe] += 3;
+            }
+          });
+        });
+        
+        // Check for future-oriented terms
+        const futureTerms = ['will', 'expect', 'anticipate', 'forecast', 'predict', 'outlook', 'guidance', 'project', 'target'];
+        const hasFutureTerms = futureTerms.some(term => text.includes(term.toLowerCase()));
+        
+        if (hasFutureTerms) {
+          Object.keys(scores).forEach(timeframe => {
+            scores[timeframe] += 1;
+          });
+        }
+        
+        // Look for specific events or announcements 
+        const eventTerms = ['earnings', 'release', 'announce', 'launch', 'unveil', 'report', 'update'];
+        const hasEvents = eventTerms.some(term => text.includes(term.toLowerCase()));
+        
+        if (hasEvents) {
+          Object.keys(scores).forEach(timeframe => {
+            scores[timeframe] += 2;
+          });
+        }
+        
+        return scores;
+      };
+      
+      // Add timeframe relevance scores to each article
+      articles.forEach(article => {
+        article.timeframe_relevance = getTimeframeScore(article);
+      });
+      
+      // Calculate a combined relevance score
+      articles.forEach(article => {
+        const tfScores = article.timeframe_relevance || {};
+        article.combinedRelevanceScore = 
+          (tfScores['7days'] || 0) + 
+          (tfScores['1month'] || 0) + 
+          (tfScores['3months'] || 0) + 
+          (tfScores['6months'] || 0);
+      });
+      
+      // Sort by combined relevance score
+      articles.sort((a, b) => (b.combinedRelevanceScore || 0) - (a.combinedRelevanceScore || 0));
+      
+      // Take top 20 articles with the highest timeframe relevance
+      return articles.slice(0, 20);
+    } catch (error) {
+      console.error('Error in fallback filtering:', error);
+      // If all else fails, just return a limited number of the original articles
+      return articles.slice(0, 20);
     }
   }
 
@@ -337,74 +367,29 @@ class OpenAIService {
       
       console.log(`Timeframe distribution: ${timeframeDetails}`);
 
-      const analysis = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `You are a financial analyst expert. Analyze the provided news articles about ${symbol} stock to predict future price movements. 
-
-            IMPORTANT: ONLY analyze the provided articles. DO NOT search for or reference any external information not contained in these articles.
-            
-            The articles have been pre-filtered and categorized by their relevance to different timeframes: 7 days, 1 month, 3 months, and 6 months.
-            Pay close attention to which timeframe each article is most relevant for, and use that information in your analysis.
-            
-            For each timeframe, provide:
-            1. A concise sentiment score from -10 to +10 (negative to positive)
-            2. Expected price direction (up, down, or neutral)
-            3. Expected percentage change (e.g., "2-5%", "minimal", etc.)
-            4. Confidence level (high, medium, low)
-            5. A brief summary capturing key insights
-            6. 3-5 primary price drivers
-            7. 3-5 key articles supporting your analysis (include publication dates)
-            
-            Return your analysis as a valid JSON object exactly matching this structure:
-            {
-              "7days": {
-                "sentiment": <number from -10 to 10>,
-                "direction": <"up", "down", or "neutral">,
-                "expected_change_percent": <string estimate>,
-                "confidence_level": <"high", "medium", or "low">,
-                "summary": <string>,
-                "price_drivers": [
-                  {
-                    "factor": <string>,
-                    "impact": <"positive", "negative", or "neutral">,
-                    "confidence": <"high", "medium", or "low">
-                  }
-                ],
-                "key_articles": [
-                  {
-                    "title": <string>,
-                    "url": <string>,
-                    "publishedAt": <string - publication date>,
-                    "source": <string>,
-                    "impact_summary": <string - detailed explanation of impact>,
-                    "confidence": <"high", "medium", or "low">
-                  }
-                ]
-              },
-              "1month": { <same structure as 7days> },
-              "3months": { <same structure as 7days> },
-              "6months": { <same structure as 7days> }
-            }
-            
-            Return ONLY the structured JSON with no other text.`
-          },
-          {
-            role: "user",
-            content: JSON.stringify(articles)
+      // Create specific prompts for each timeframe using only the relevant articles for that timeframe
+      const timeframes = ['7days', '1month', '3months', '6months'];
+      const timeframeAnalyses = await Promise.all(
+        timeframes.map(async (timeframe) => {
+          const relevantArticles = timeframeArticles[timeframe];
+          if (relevantArticles.length === 0) {
+            console.log(`No articles found for timeframe: ${timeframe}, using general articles`);
+            // If no specific articles for this timeframe, use a subset of all articles
+            return this.analyzeSingleTimeframe(symbol, timeframe, articles.slice(0, 20));
+          } else {
+            console.log(`Analyzing ${timeframe} with ${relevantArticles.length} relevant articles`);
+            return this.analyzeSingleTimeframe(symbol, timeframe, relevantArticles);
           }
-        ],
-        temperature: 0.5,
-        max_tokens: 4000
-      });
-
-      if (!analysis.choices?.[0]?.message?.content) {
-        throw new Error('Invalid response from OpenAI');
-      }
-
-      const result = this.cleanAndParseResponse(analysis.choices[0].message.content, 'analysis');
+        })
+      );
+      
+      // Combine the results into a single analysis object
+      const result = {
+        '7days': timeframeAnalyses[0],
+        '1month': timeframeAnalyses[1],
+        '3months': timeframeAnalyses[2],
+        '6months': timeframeAnalyses[3]
+      };
       
       // Validate structure of the response
       try {
@@ -420,7 +405,164 @@ class OpenAIService {
     }
   }
   
-  // Organize articles by timeframe relevance
+  // Analyze a single timeframe with relevant articles
+  async analyzeSingleTimeframe(symbol, timeframe, articles) {
+    // Convert timeframe to human-readable range
+    const timeframeDescription = {
+      '7days': 'the next 7 days',
+      '1month': 'the next month',
+      '3months': 'the next 3 months',
+      '6months': 'the next 6 months'
+    }[timeframe];
+    
+    // Calculate specific date range for this timeframe
+    const startDate = new Date();
+    const endDate = new Date();
+    
+    switch(timeframe) {
+      case '7days':
+        endDate.setDate(startDate.getDate() + 7);
+        break;
+      case '1month':
+        endDate.setMonth(startDate.getMonth() + 1);
+        break;
+      case '3months':
+        endDate.setMonth(startDate.getMonth() + 3);
+        break;
+      case '6months':
+        endDate.setMonth(startDate.getMonth() + 6);
+        break;
+    }
+    
+    const dateRangeStr = `${startDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}`;
+    
+    try {
+      // Sort articles by their timeframe relevance score for this specific timeframe
+      let timeframeArticles = [...articles];
+      
+      // If articles have timeframe_relevance scores, prioritize based on that
+      if (articles.length > 0 && articles[0].timeframe_relevance) {
+        timeframeArticles.sort((a, b) => {
+          const scoreA = a.timeframe_relevance[timeframe] || 0;
+          const scoreB = b.timeframe_relevance[timeframe] || 0;
+          return scoreB - scoreA;  // Higher scores first
+        });
+        
+        // If we have enough relevant articles, only use the top ones
+        if (timeframeArticles.length > 10) {
+          // Get articles with a decent relevance score (5+ out of 10)
+          const highlyRelevant = timeframeArticles.filter(a => 
+            (a.timeframe_relevance[timeframe] || 0) >= 5
+          );
+          
+          // If we have enough highly relevant articles, use only those
+          if (highlyRelevant.length >= 5) {
+            timeframeArticles = highlyRelevant;
+          } else {
+            // Otherwise take the top 10 by relevance
+            timeframeArticles = timeframeArticles.slice(0, 10);
+          }
+        }
+      }
+      
+      console.log(`Analyzing ${timeframe} with ${timeframeArticles.length} articles, top relevance score: ${
+        timeframeArticles.length > 0 && timeframeArticles[0].timeframe_relevance ? 
+        timeframeArticles[0].timeframe_relevance[timeframe] || 'N/A' : 
+        'N/A'
+      }`);
+      
+      const analysisResponse = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `You are a financial analyst expert. Your task is to analyze news about ${symbol} to predict stock price movements SPECIFICALLY FOR ${timeframeDescription.toUpperCase()} (${dateRangeStr}).
+
+            IMPORTANT: 
+            1. Focus on PREDICTIVE VALUE of information, not publication date
+            2. PRIORITIZE articles discussing events SCHEDULED TO OCCUR between ${dateRangeStr}, REGARDLESS of when the article was published
+            3. Example: If an article from January mentions an earnings report due in the forecast period, it's HIGHLY relevant
+            4. Example: If an article mentions "Q3 outlook" and the forecast period is within Q3, it's HIGHLY relevant
+            5. Older articles containing valuable insights about trends, fundamentals, or strategies that will affect ${timeframeDescription} are valuable
+            6. Only consider impact during this specific forecast period: ${dateRangeStr}
+            7. Ignore factors that would primarily affect periods outside this range
+            
+            Some articles may have been pre-rated for timeframe relevance. Articles presented earlier in the list may have higher relevance to this specific timeframe.
+            
+            Based on the provided articles, give:
+            1. A concise sentiment score from -10 to +10 (negative to positive)
+            2. Expected price direction (up, down, or neutral)
+            3. Expected percentage change (e.g., "2-5%", "minimal", etc.)
+            4. Confidence level (high, medium, low)
+            5. A detailed summary explaining your prediction, citing specific supporting evidence
+            6. 3-5 primary price drivers during this timeframe
+            7. 3-5 key articles supporting your analysis, with detailed explanation of their predictive value
+            
+            Return your analysis as a valid JSON object:
+            {
+              "sentiment": <number from -10 to 10>,
+              "direction": <"up", "down", or "neutral">,
+              "expected_change_percent": <string estimate>,
+              "confidence_level": <"high", "medium", or "low">,
+              "summary": <string>,
+              "price_drivers": [
+                {
+                  "factor": <string>,
+                  "impact": <"positive", "negative", or "neutral">,
+                  "confidence": <"high", "medium", or "low">
+                }
+              ],
+              "key_articles": [
+                {
+                  "title": <string>,
+                  "url": <string>,
+                  "publishedAt": <string - publication date>,
+                  "source": <string>,
+                  "impact_summary": <string - detailed explanation of impact>,
+                  "confidence": <"high", "medium", or "low">
+                }
+              ]
+            }
+            
+            Return ONLY the structured JSON with no other text.`
+          },
+          {
+            role: "user",
+            content: JSON.stringify(timeframeArticles)
+          }
+        ],
+        temperature: 0.5,
+        max_tokens: 2000
+      });
+
+      if (!analysisResponse.choices?.[0]?.message?.content) {
+        throw new Error(`Invalid response from OpenAI for timeframe ${timeframe}`);
+      }
+
+      const result = this.cleanAndParseResponse(analysisResponse.choices[0].message.content, `${timeframe} analysis`);
+      return result;
+    } catch (error) {
+      console.error(`Error analyzing timeframe ${timeframe}:`, error);
+      // Return a fallback empty structure that follows the expected format
+      return {
+        sentiment: 0,
+        direction: "neutral",
+        expected_change_percent: "0%",
+        confidence_level: "low",
+        summary: `Insufficient data to analyze ${timeframe} timeframe.`,
+        price_drivers: [
+          {
+            factor: "Insufficient data",
+            impact: "neutral",
+            confidence: "low"
+          }
+        ],
+        key_articles: []
+      };
+    }
+  }
+  
+  // Organize articles by timeframe, but with stricter timeframe-specific filtering
   organizeArticlesByTimeframe(articles) {
     // Initialize result object with arrays for each timeframe
     const result = {
@@ -430,114 +572,139 @@ class OpenAIService {
       '6months': []
     };
     
-    // Process each article to determine its best matching timeframe(s)
+    // Get the current date
+    const now = new Date();
+    
+    // Define today and the end dates for each timeframe
+    const sevenDaysEnd = new Date(now);
+    sevenDaysEnd.setDate(now.getDate() + 7);
+    
+    const oneMonthEnd = new Date(now);
+    oneMonthEnd.setMonth(now.getMonth() + 1);
+    
+    const threeMonthsEnd = new Date(now);
+    threeMonthsEnd.setMonth(now.getMonth() + 3);
+    
+    const sixMonthsEnd = new Date(now);
+    sixMonthsEnd.setMonth(now.getMonth() + 6);
+    
+    // For each article, determine which timeframe(s) it's most relevant for
     articles.forEach(article => {
-      // If article has explicit timeframe scores, use them
+      // Default relevance flags
+      let is7daysRelevant = false;
+      let is1monthRelevant = false;
+      let is3monthsRelevant = false;
+      let is6monthsRelevant = false;
+      
+      // If the article has explicit timeframe scores, use them
       if (article.timeframeScores && Object.keys(article.timeframeScores).length > 0) {
-        // Find the timeframe(s) with the highest score
         const scores = article.timeframeScores;
         const maxScore = Math.max(...Object.values(scores));
         
-        // Assign to all timeframes where the score is at least 90% of the max
-        let assigned = false;
-        for (const [timeframe, score] of Object.entries(scores)) {
-          if (score >= maxScore * 0.9) {
-            result[timeframe].push(article);
-            assigned = true;
-          }
-        }
-        
-        // If not assigned to any timeframe (shouldn't happen), use a fallback method
-        if (!assigned) {
-          this.assignArticleByFallback(article, result);
-        }
+        // Only include in timeframes where the score is high enough (90% of max)
+        if (scores['7days'] >= maxScore * 0.9) is7daysRelevant = true;
+        if (scores['1month'] >= maxScore * 0.9) is1monthRelevant = true;
+        if (scores['3months'] >= maxScore * 0.9) is3monthsRelevant = true;
+        if (scores['6months'] >= maxScore * 0.9) is6monthsRelevant = true;
       }
       // If article has timeframeRelevance data, use it
       else if (article.timeframeRelevance && Object.keys(article.timeframeRelevance).length > 0) {
         const relevance = article.timeframeRelevance;
         const maxRelevance = Math.max(...Object.values(relevance));
         
-        // Assign to all timeframes where the relevance is at least 80% of the max
-        let assigned = false;
-        for (const [timeframe, score] of Object.entries(relevance)) {
-          if (score >= maxRelevance * 0.8) {
-            result[timeframe].push(article);
-            assigned = true;
-          }
+        // Only include in timeframes where the relevance is high enough (80% of max)
+        if (relevance['7days'] >= maxRelevance * 0.8) is7daysRelevant = true;
+        if (relevance['1month'] >= maxRelevance * 0.8) is1monthRelevant = true;
+        if (relevance['3months'] >= maxRelevance * 0.8) is3monthsRelevant = true;
+        if (relevance['6months'] >= maxRelevance * 0.8) is6monthsRelevant = true;
+      }
+      // If no explicit data, use content and publication date to determine
+      else {
+        // Extract the content for keyword matching
+        const content = (article.title + ' ' + (article.description || '')).toLowerCase();
+        
+        // Check for specific timeframe-related keywords
+        const shortTermKeywords = ['today', 'yesterday', 'this week', 'next week', 'days', 'short term', 'immediate'];
+        const midTermKeywords = ['this month', 'next month', 'monthly', 'coming weeks', 'few weeks'];
+        const quarterlyKeywords = ['quarter', 'quarterly', 'q1', 'q2', 'q3', 'q4', 'months', 'medium term'];
+        const longTermKeywords = ['long term', 'year', 'yearly', 'annual', 'future', 'roadmap', 'strategy'];
+        
+        // Check for specific event mentions with dates
+        const hasShortTermEvent = shortTermKeywords.some(term => content.includes(term));
+        const hasMidTermEvent = midTermKeywords.some(term => content.includes(term));
+        const hasQuarterlyEvent = quarterlyKeywords.some(term => content.includes(term));
+        const hasLongTermEvent = longTermKeywords.some(term => content.includes(term));
+        
+        // Consider article publish date for recency-based relevance
+        let daysSincePublished = 30; // Default
+        
+        if (article.publishedDate) {
+          daysSincePublished = Math.floor((now - new Date(article.publishedDate)) / (1000 * 60 * 60 * 24));
+        } else if (article.pubDate) {
+          daysSincePublished = Math.floor((now - new Date(article.pubDate)) / (1000 * 60 * 60 * 24));
+        } else if (article.publishedAt) {
+          try {
+            daysSincePublished = Math.floor((now - new Date(article.publishedAt)) / (1000 * 60 * 60 * 24));
+          } catch (e) { /* Use default */ }
         }
         
-        // If not assigned to any timeframe, use fallback
-        if (!assigned) {
-          this.assignArticleByFallback(article, result);
+        // Assign to timeframes based on recency and content
+        if (daysSincePublished < 3 || hasShortTermEvent) {
+          is7daysRelevant = true;
         }
-      } 
-      // If no explicit data, use fallback assignment method
-      else {
-        this.assignArticleByFallback(article, result);
+        
+        if ((daysSincePublished < 7 && !is7daysRelevant) || hasMidTermEvent) {
+          is1monthRelevant = true;
+        }
+        
+        if ((daysSincePublished < 30 && !is1monthRelevant) || hasQuarterlyEvent) {
+          is3monthsRelevant = true;
+        }
+        
+        if (daysSincePublished >= 30 || hasLongTermEvent) {
+          is6monthsRelevant = true;
+        }
+      }
+      
+      // Add the article to the appropriate timeframe buckets
+      if (is7daysRelevant) result['7days'].push(article);
+      if (is1monthRelevant) result['1month'].push(article);
+      if (is3monthsRelevant) result['3months'].push(article);
+      if (is6monthsRelevant) result['6months'].push(article);
+    });
+    
+    // Ensure each timeframe has sufficient articles
+    const minArticlesPerTimeframe = 5;
+    
+    // If any timeframe has insufficient articles, add the most relevant from other timeframes
+    if (result['7days'].length < minArticlesPerTimeframe) {
+      const additionalArticles = articles
+        .filter(a => !result['7days'].includes(a))
+        .sort((a, b) => {
+          // Sort by recency first
+          const aDate = a.publishedDate || new Date(a.publishedAt || a.pubDate || Date.now());
+          const bDate = b.publishedDate || new Date(b.publishedAt || b.pubDate || Date.now());
+          return bDate - aDate;
+        })
+        .slice(0, minArticlesPerTimeframe - result['7days'].length);
+      
+      result['7days'] = [...result['7days'], ...additionalArticles];
+    }
+    
+    // Do the same for other timeframes
+    ['1month', '3months', '6months'].forEach(timeframe => {
+      if (result[timeframe].length < minArticlesPerTimeframe) {
+        // Find articles not already in this timeframe
+        const additionalArticles = articles
+          .filter(a => !result[timeframe].includes(a))
+          .sort((a, b) => (b.timeframeScores?.[timeframe] || 0) - (a.timeframeScores?.[timeframe] || 0))
+          .slice(0, minArticlesPerTimeframe - result[timeframe].length);
+        
+        result[timeframe] = [...result[timeframe], ...additionalArticles];
       }
     });
     
     return result;
-  }
-  
-  // Fallback method for assigning articles to timeframes based on content and date
-  assignArticleByFallback(article, result) {
-    // Check publication date
-    const now = new Date();
-    let daysSincePublished = 30; // Default if we can't determine
-    
-    if (article.publishedDate) {
-      daysSincePublished = Math.floor((now - new Date(article.publishedDate)) / (1000 * 60 * 60 * 24));
-    } else if (article.pubDate) {
-      daysSincePublished = Math.floor((now - new Date(article.pubDate)) / (1000 * 60 * 60 * 24));
-    } else if (article.publishedAt) {
-      // Try to parse date from string
-      try {
-        daysSincePublished = Math.floor((now - new Date(article.publishedAt)) / (1000 * 60 * 60 * 24));
-      } catch (e) {
-        // Keep default
-      }
-    }
-    
-    // Check content for timeframe keywords
-    const content = (article.title + ' ' + (article.description || '')).toLowerCase();
-    
-    // Define timeframe-related terms
-    const timeframeKeywords = {
-      '7days': ['today', 'yesterday', 'this week', 'next week', 'days', 'short term'],
-      '1month': ['this month', 'next month', 'monthly', 'weeks', 'short term'],
-      '3months': ['quarter', 'quarterly', 'q1', 'q2', 'q3', 'q4', 'months', 'medium term'],
-      '6months': ['long term', 'year', 'annual', 'future', 'roadmap', 'strategy']
-    };
-    
-    // Check for explicit timeframe mentions
-    let assignedByKeyword = false;
-    for (const [timeframe, keywords] of Object.entries(timeframeKeywords)) {
-      for (const keyword of keywords) {
-        if (content.includes(keyword)) {
-          result[timeframe].push(article);
-          assignedByKeyword = true;
-          break;
-        }
-      }
-      if (assignedByKeyword) break;
-    }
-    
-    // If no keywords matched, assign based on recency
-    if (!assignedByKeyword) {
-      if (daysSincePublished < 3) {
-        result['7days'].push(article);
-      } else if (daysSincePublished < 7) {
-        result['7days'].push(article);
-        result['1month'].push(article);
-      } else if (daysSincePublished < 30) {
-        result['1month'].push(article);
-        result['3months'].push(article);
-      } else {
-        result['3months'].push(article);
-        result['6months'].push(article);
-      }
-    }
   }
 }
 

@@ -218,13 +218,23 @@ class NewsService {
         { query: `${symbol} merger acquisition partnership`, timeframe: 'general' }
       ];
       
+      // Get dates for the query date range (last 12 months)
+      const today = new Date();
+      const oneYearAgo = new Date(today);
+      oneYearAgo.setFullYear(today.getFullYear() - 1);
+      
+      // Format dates for Google News query: YYYY-MM-DD
+      const afterDate = oneYearAgo.toISOString().split('T')[0];
+      const beforeDate = today.toISOString().split('T')[0];
+      const dateRangeParam = `&after=${afterDate}&before=${beforeDate}`;
+      
       // Execute all queries in parallel
       const searchResults = await Promise.all(
         queries.map(async (queryObj) => {
           try {
             // Use direct Google search with cheerio scraping
             const encodedQuery = encodeURIComponent(queryObj.query);
-            const url = `https://news.google.com/rss/search?q=${encodedQuery}&hl=en-US&gl=US&ceid=US:en`;
+            const url = `https://news.google.com/rss/search?q=${encodedQuery}${dateRangeParam}&hl=en-US&gl=US&ceid=US:en`;
             
             const response = await axios.get(url);
             const $ = cheerio.load(response.data, { xmlMode: true });
@@ -329,7 +339,8 @@ class NewsService {
             timeframeRelevance: this.assessTimeframeRelevance(
               publishedDate, 
               item.title + ' ' + cleanDescription, 
-              item.timeframeHint
+              item.timeframeHint,
+              this.calculateTimeframeRecency(publishedDate)
             ),
             relevanceScore: 0 // Will be updated during filtering
           };
@@ -447,6 +458,54 @@ class NewsService {
     
     // Essential keywords - at least one must be present
     const essentialKeywords = [symbol.toLowerCase(), 'stock', 'share', 'price', 'market', 'trading', 'earnings'];
+    
+    // REMOVED: Date filtering - we'll let OpenAI handle relevance instead
+    // Just log info about article age distribution for diagnostic purposes
+    const now = new Date();
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    
+    const ageGroups = {
+      recent: 0,      // < 1 month
+      moderate: 0,    // 1-6 months 
+      older: 0,       // 6-12 months
+      historical: 0   // > 1 year
+    };
+    
+    articles.forEach(article => {
+      let pubDate;
+      try {
+        if (article.publishedDate && article.publishedDate instanceof Date) {
+          pubDate = article.publishedDate;
+        } else if (article.pubDate) {
+          pubDate = new Date(article.pubDate);
+        } else if (article.publishedAt) {
+          // Try to parse from the string format
+          const dateMatch = article.publishedAt.match(/(\w+, )?(\w+ \d{1,2}, \d{4})/);
+          if (dateMatch && dateMatch[2]) {
+            pubDate = new Date(dateMatch[2]);
+          }
+        }
+        
+        if (pubDate && !isNaN(pubDate.getTime())) {
+          const daysSincePublished = Math.floor((now - pubDate) / (1000 * 60 * 60 * 24));
+          
+          if (daysSincePublished < 30) {
+            ageGroups.recent++;
+          } else if (daysSincePublished < 180) {
+            ageGroups.moderate++;
+          } else if (daysSincePublished < 365) {
+            ageGroups.older++;
+          } else {
+            ageGroups.historical++;
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing date:', e);
+      }
+    });
+    
+    console.log(`Article age distribution: Recent: ${ageGroups.recent}, Moderate: ${ageGroups.moderate}, Older: ${ageGroups.older}, Historical: ${ageGroups.historical}`);
     
     // Process articles and calculate relevance scores
     const scoredArticles = articles.map(article => {
@@ -679,10 +738,38 @@ class NewsService {
     const threeDaysAgo = new Date(now);
     threeDaysAgo.setDate(now.getDate() - 3);
     
+    // Additional recency thresholds for timeframe filtering
+    const oneWeekAgo = new Date(now);
+    oneWeekAgo.setDate(now.getDate() - 7);
+    
+    const oneMonthAgo = new Date(now);
+    oneMonthAgo.setMonth(now.getMonth() - 1);
+    
+    const threeMonthsAgo = new Date(now);
+    threeMonthsAgo.setMonth(now.getMonth() - 3);
+    
     return articles.map(article => {
+      // Get publication date from various fields
+      let pubDate;
+      if (article.publishedDate && article.publishedDate instanceof Date) {
+        pubDate = article.publishedDate;
+      } else if (article.pubDate) {
+        pubDate = new Date(article.pubDate);
+        if (isNaN(pubDate.getTime())) pubDate = new Date(); // fallback to current date
+      } else {
+        pubDate = new Date(); // default to current date if no date found
+      }
+      
       // Check if article is recent (published within last 3 days)
-      const pubDate = article.pubDate ? new Date(article.pubDate) : null;
-      const isRecent = pubDate && pubDate > threeDaysAgo;
+      const isRecent = pubDate > threeDaysAgo;
+      
+      // Calculate recency score for different timeframes
+      const timeframeRecency = {
+        '7days': pubDate > oneWeekAgo ? 5 : 0, // Strong boost for very recent articles
+        '1month': pubDate > oneMonthAgo ? 3 : 0,
+        '3months': pubDate > threeMonthsAgo ? 2 : 0,
+        '6months': 1 // All articles within the 1-year filter get at least some relevance
+      };
       
       // Check if article contains future-oriented terms
       const textContent = (article.title + ' ' + article.description).toLowerCase();
@@ -692,6 +779,7 @@ class NewsService {
         ...article,
         isRecent,
         hasFutureTerms,
+        timeframeRecency, // Add recency scores for each timeframe
         // Add a text snippet for OpenAI analysis
         snippet: article.title + '. ' + article.description
       };
@@ -699,7 +787,7 @@ class NewsService {
   }
 
   // Assess which timeframes an article is most relevant for
-  assessTimeframeRelevance(publishedDate, text, queryTimeframeHint) {
+  assessTimeframeRelevance(publishedDate, text, queryTimeframeHint, timeframeRecency) {
     const lowerText = text.toLowerCase();
     const daysSincePublished = Math.floor((new Date() - publishedDate) / (1000 * 60 * 60 * 24));
     
@@ -711,20 +799,29 @@ class NewsService {
       '6months': 0
     };
     
-    // Boost based on recency
-    if (daysSincePublished < 3) {
-      relevance['7days'] += 3;
-      relevance['1month'] += 1;
-    } else if (daysSincePublished < 7) {
-      relevance['7days'] += 2;
-      relevance['1month'] += 2;
-    } else if (daysSincePublished < 30) {
-      relevance['7days'] += 1;
-      relevance['1month'] += 3;
-      relevance['3months'] += 1;
+    // Incorporate timeframeRecency if available
+    if (timeframeRecency) {
+      for (const timeframe in relevance) {
+        if (timeframeRecency[timeframe]) {
+          relevance[timeframe] += timeframeRecency[timeframe];
+        }
+      }
     } else {
-      relevance['3months'] += 2;
-      relevance['6months'] += 2;
+      // Legacy recency calculation if timeframeRecency not available
+      if (daysSincePublished < 3) {
+        relevance['7days'] += 3;
+        relevance['1month'] += 1;
+      } else if (daysSincePublished < 7) {
+        relevance['7days'] += 2;
+        relevance['1month'] += 2;
+      } else if (daysSincePublished < 30) {
+        relevance['7days'] += 1;
+        relevance['1month'] += 3;
+        relevance['3months'] += 1;
+      } else {
+        relevance['3months'] += 2;
+        relevance['6months'] += 2;
+      }
     }
     
     // Boost based on timeframe keywords
@@ -750,6 +847,21 @@ class NewsService {
     }
     
     return relevance;
+  }
+
+  calculateTimeframeRecency(publishedDate) {
+    const now = new Date();
+    const daysSincePublished = Math.floor((now - publishedDate) / (1000 * 60 * 60 * 24));
+    
+    if (daysSincePublished < 3) {
+      return { '7days': 5, '1month': 3, '3months': 2, '6months': 1 };
+    } else if (daysSincePublished < 7) {
+      return { '7days': 2, '1month': 2, '3months': 1, '6months': 1 };
+    } else if (daysSincePublished < 30) {
+      return { '7days': 1, '1month': 3, '3months': 1, '6months': 1 };
+    } else {
+      return { '7days': 0, '1month': 2, '3months': 2, '6months': 2 };
+    }
   }
 }
 

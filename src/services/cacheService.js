@@ -52,6 +52,8 @@ class CacheService {
     this.maxConcurrentCachingOperations = 2;
     this.cacheGroups = new Map();
     this.nextGroupId = 1;
+    // Track scheduled refresh timers so we can cancel them
+    this.refreshTimers = [];
   }
 
   /**
@@ -117,24 +119,48 @@ class CacheService {
    * Schedule staggered caching for all groups
    */
   scheduleStaggeredCaching() {
+    // Clear any existing timers first
+    this.cancelAllCacheTimers();
+    
     // Schedule each group with a staggered start
     for (const [groupId, group] of this.cacheGroups.entries()) {
       // Calculate delay for this group (stagger by group ID)
       const initialDelay = (groupId - 1) * STAGGER_INTERVAL;
       
       // Schedule initial caching after the staggered delay
-      setTimeout(() => {
+      const initialTimer = setTimeout(() => {
         this.refreshCacheGroup(group);
         
         // Set up recurring refresh for this group
-        setInterval(() => {
+        const recurringTimer = setInterval(() => {
           this.refreshCacheGroup(group);
         }, CACHE_REFRESH_INTERVAL);
         
+        // Store the recurring timer reference
+        this.refreshTimers.push(recurringTimer);
+        
       }, initialDelay);
+      
+      // Store the initial timer reference
+      this.refreshTimers.push(initialTimer);
       
       console.log(`Scheduled group ${groupId} to start in ${initialDelay/1000} seconds and refresh every ${CACHE_REFRESH_INTERVAL/60000} minutes`);
     }
+  }
+
+  /**
+   * Cancel all scheduled cache timers
+   */
+  cancelAllCacheTimers() {
+    // Clear all existing timers
+    this.refreshTimers.forEach(timer => {
+      clearTimeout(timer);
+      clearInterval(timer);
+    });
+    
+    // Reset the timers array
+    this.refreshTimers = [];
+    console.log('Cancelled all scheduled cache refresh timers');
   }
 
   /**
@@ -405,9 +431,19 @@ class CacheService {
    */
   async clearPopularCache() {
     try {
+      // Cancel all ongoing cache operations
+      this.cancelAllCacheTimers();
+      
+      // Reset active operations counter
+      this.activeCachingOperations = 0;
+      
       // Clear the in-memory cache
       popularStocksCache.clear();
       console.log('Popular stocks cache cleared');
+      
+      // Clear the cache groups
+      this.cacheGroups.clear();
+      console.log('Cache groups cleared');
       
       // Restart the staggered caching process
       this.startStaggeredCaching();
