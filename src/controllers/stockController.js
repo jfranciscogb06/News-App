@@ -78,8 +78,14 @@ class StockController {
         cacheService.cancelAllCacheTimers();
       }
       
-      // Clear MongoDB cache
+      // Clear MongoDB news cache
       const deletedCount = await NewsCache.clearAll();
+      
+      // Clear popular searches collection
+      const mongoose = require('mongoose');
+      const PopularSearchModel = mongoose.model('PopularSearch');
+      const searchesDeleted = await PopularSearchModel.deleteMany({});
+      console.log(`Cleared popular searches: ${searchesDeleted.deletedCount} entries deleted`);
       
       // Clear popular stocks cache if cacheService is available
       let popularCacheCleared = false;
@@ -94,7 +100,8 @@ class StockController {
       res.json({
         success: true,
         message: 'All caches cleared successfully',
-        deletedEntries: deletedCount,
+        newsCacheDeleted: deletedCount,
+        searchesDeleted: searchesDeleted.deletedCount,
         popularCacheCleared
       });
     } catch (error) {

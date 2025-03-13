@@ -445,8 +445,25 @@ class CacheService {
       this.cacheGroups.clear();
       console.log('Cache groups cleared');
       
-      // Restart the staggered caching process
-      this.startStaggeredCaching();
+      // Reset internal state
+      this.nextGroupId = 1;
+      
+      // Clear any other in-memory state that might persist
+      Object.keys(this).forEach(key => {
+        // Only reset arrays and objects, not functions or primitives
+        if (Array.isArray(this[key])) {
+          this[key] = [];
+        } else if (this[key] && typeof this[key] === 'object' && !(this[key] instanceof Map) && !(this[key] instanceof Set)) {
+          this[key] = {};
+        }
+      });
+      
+      console.log('All internal cache state reset');
+      
+      // Restart the staggered caching process with fresh data
+      setTimeout(() => {
+        this.startStaggeredCaching();
+      }, 1000); // Small delay to ensure clean restart
       
       return true;
     } catch (error) {
