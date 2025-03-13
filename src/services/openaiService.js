@@ -141,29 +141,75 @@ class OpenAIService {
     const timeframes = ['7days', '1month', '3months', '6months'];
     
     for (const timeframe of timeframes) {
-      if (!data[timeframe] ||
-          typeof data[timeframe].sentiment !== 'number' ||
-          typeof data[timeframe].summary !== 'string' ||
-          !Array.isArray(data[timeframe].price_drivers) ||
-          !Array.isArray(data[timeframe].key_articles) ||
-          !['up', 'down', 'neutral'].includes(data[timeframe].direction) ||
-          typeof data[timeframe].expected_change_percent !== 'string' ||
-          typeof data[timeframe].confidence_level !== 'string') {
+      // Check if the timeframe data exists
+      if (!data[timeframe]) {
+        throw new Error(`Missing data for timeframe: ${timeframe}`);
+      }
+      
+      // Handle potential compatibility issues - map the new format to old format if needed
+      const timeframeData = data[timeframe];
+      
+      // If the response is using the new format (prediction, confidence, magnitude, key_factors, etc.)
+      if (timeframeData.prediction && !timeframeData.direction) {
+        console.log(`Converting new format to compatible format for ${timeframe}`);
+        
+        // Convert prediction to direction
+        if (timeframeData.prediction.toLowerCase() === 'up') {
+          timeframeData.direction = 'up';
+          timeframeData.sentiment = 5; // Positive sentiment
+        } else if (timeframeData.prediction.toLowerCase() === 'down') {
+          timeframeData.direction = 'down';
+          timeframeData.sentiment = -5; // Negative sentiment
+        } else {
+          timeframeData.direction = 'neutral';
+          timeframeData.sentiment = 0; // Neutral sentiment
+        }
+        
+        // Map confidence to confidence_level
+        timeframeData.confidence_level = timeframeData.confidence || 'medium';
+        
+        // Create expected_change_percent from magnitude
+        if (timeframeData.magnitude === 'significant') {
+          timeframeData.expected_change_percent = timeframeData.direction === 'up' ? '>5%' : '<-5%';
+        } else if (timeframeData.magnitude === 'moderate') {
+          timeframeData.expected_change_percent = timeframeData.direction === 'up' ? '2-5%' : '-2% to -5%';
+        } else {
+          timeframeData.expected_change_percent = timeframeData.direction === 'up' ? '0-2%' : '-2% to 0%';
+        }
+        
+        // Create summary if missing
+        if (!timeframeData.summary) {
+          const keyFactors = Array.isArray(timeframeData.key_factors) 
+            ? timeframeData.key_factors.join('. ') 
+            : 'No specific factors identified.';
+            
+          timeframeData.summary = `Analysis predicts ${timeframeData.prediction} movement with ${timeframeData.confidence} confidence. ${keyFactors}`;
+        }
+        
+        // Convert key_factors to price_drivers if needed
+        if (timeframeData.key_factors && !timeframeData.price_drivers) {
+          timeframeData.price_drivers = timeframeData.key_factors.map(factor => ({
+            factor,
+            impact: timeframeData.direction === 'up' ? 'positive' : 
+                   timeframeData.direction === 'down' ? 'negative' : 'neutral',
+            confidence: timeframeData.confidence || 'medium'
+          }));
+        }
+      }
+      
+      // Now validate that the necessary fields exist in the compatible format
+      if (typeof timeframeData.sentiment !== 'number' ||
+          typeof timeframeData.summary !== 'string' ||
+          !Array.isArray(timeframeData.price_drivers) ||
+          !Array.isArray(timeframeData.key_articles) ||
+          !['up', 'down', 'neutral'].includes(timeframeData.direction) ||
+          typeof timeframeData.expected_change_percent !== 'string' ||
+          typeof timeframeData.confidence_level !== 'string') {
         throw new Error(`Invalid structure for timeframe: ${timeframe}`);
       }
       
-      // Verify that timeframe_label exists (optional but recommended)
-      if (data[timeframe].timeframe_label && typeof data[timeframe].timeframe_label !== 'string') {
-        throw new Error(`Invalid timeframe_label for timeframe: ${timeframe}`);
-      }
-      
-      // Verify that display_order exists (optional but recommended)
-      if (data[timeframe].display_order && typeof data[timeframe].display_order !== 'number') {
-        throw new Error(`Invalid display_order for timeframe: ${timeframe}`);
-      }
-      
       // Validate price_drivers structure
-      for (const driver of data[timeframe].price_drivers) {
+      for (const driver of timeframeData.price_drivers) {
         if (!driver.factor || 
             !driver.impact || 
             !['positive', 'negative', 'neutral'].includes(driver.impact) ||
@@ -174,7 +220,7 @@ class OpenAIService {
       }
       
       // Validate key_articles structure
-      for (const article of data[timeframe].key_articles) {
+      for (const article of timeframeData.key_articles) {
         if (!article.title || 
             !article.url || 
             !article.source || 
@@ -542,6 +588,8 @@ Select up to ${maxArticles} articles, prioritizing those with unique insights ac
         - Impact summary (1-2 sentences on why this article is significant)
         - Confidence in this article (high/medium/low, factoring in source credibility)
         
+        IMPORTANT: Your prediction MUST be one of exactly three values: "UP", "DOWN", or "SIDEWAYS" (all caps).
+        
         Return your analysis as a JSON object with this structure:
         {
           "prediction": "UP|DOWN|SIDEWAYS",
@@ -616,8 +664,13 @@ Content: ${article.description || article.content || 'No content available'}
         throw new Error(`Invalid response from OpenAI for timeframe ${timeframe}`);
       }
 
-      const result = this.cleanAndParseResponse(response.choices[0].message.content, `${timeframe} analysis`);
-      return result;
+      // Parse the response and convert to legacy format
+      let result = this.cleanAndParseResponse(response.choices[0].message.content, `${timeframe} analysis`);
+      
+      // Convert the new format to the legacy format expected by the rest of the application
+      const legacyFormat = this.convertToLegacyFormat(result, timeframe);
+      
+      return legacyFormat;
     } catch (error) {
       console.error(`Error analyzing timeframe ${timeframe}:`, error);
       // Return a fallback empty structure that follows the expected format
@@ -637,6 +690,118 @@ Content: ${article.description || article.content || 'No content available'}
         key_articles: []
       };
     }
+  }
+  
+  // Helper method to convert the new format to the legacy format
+  convertToLegacyFormat(newFormat, timeframe) {
+    // If already in legacy format, return as is
+    if (newFormat.sentiment !== undefined && 
+        newFormat.direction !== undefined && 
+        newFormat.expected_change_percent !== undefined) {
+      return newFormat;
+    }
+    
+    console.log(`Converting new format to legacy format for ${timeframe}`);
+    
+    // Map prediction to direction and sentiment
+    let direction = 'neutral';
+    let sentiment = 0;
+    
+    if (newFormat.prediction) {
+      const pred = newFormat.prediction.toLowerCase();
+      if (pred === 'up') {
+        direction = 'up';
+        sentiment = 5; // Positive sentiment
+      } else if (pred === 'down') {
+        direction = 'down';
+        sentiment = -5; // Negative sentiment
+      } else if (pred === 'sideways') {
+        direction = 'neutral';
+        sentiment = 0; // Neutral sentiment
+      }
+    }
+    
+    // Determine expected_change_percent from magnitude
+    let expected_change_percent = '0%';
+    if (newFormat.magnitude) {
+      if (direction === 'neutral') {
+        expected_change_percent = '-1% to 1%'; // Sideways movement
+      } else if (newFormat.magnitude === 'significant') {
+        expected_change_percent = direction === 'up' ? '>5%' : '<-5%';
+      } else if (newFormat.magnitude === 'moderate') {
+        expected_change_percent = direction === 'up' ? '2-5%' : '-2% to -5%';
+      } else {
+        expected_change_percent = direction === 'up' ? '0-2%' : '-2% to 0%';
+      }
+    }
+    
+    // Create a summary from key factors if needed
+    let summary = newFormat.summary;
+    if (!summary && newFormat.key_factors) {
+      const keyFactors = Array.isArray(newFormat.key_factors) 
+        ? newFormat.key_factors.join('. ') 
+        : 'No specific factors identified.';
+        
+      const predictionText = direction === 'up' ? 'upward' :
+                            direction === 'down' ? 'downward' : 'sideways';
+      
+      summary = `Analysis predicts ${predictionText} movement with ${newFormat.confidence || 'medium'} confidence. ${keyFactors}`;
+    }
+    
+    // Convert key_factors to price_drivers
+    const price_drivers = [];
+    if (newFormat.key_factors && Array.isArray(newFormat.key_factors)) {
+      for (const factor of newFormat.key_factors) {
+        price_drivers.push({
+          factor,
+          impact: direction === 'up' ? 'positive' : 
+                 direction === 'down' ? 'negative' : 'neutral',
+          confidence: newFormat.confidence || 'medium'
+        });
+      }
+    }
+    
+    // Also convert risks to price drivers
+    if (newFormat.risks && Array.isArray(newFormat.risks)) {
+      // Add risks as negative or neutral price drivers depending on prediction
+      for (const risk of newFormat.risks) {
+        price_drivers.push({
+          factor: risk,
+          impact: direction === 'up' ? 'negative' : 'neutral', // Risks for UP prediction are negative, otherwise neutral
+          confidence: newFormat.confidence || 'medium'
+        });
+      }
+    }
+    
+    // Ensure key_articles have the right format
+    const key_articles = newFormat.key_articles || [];
+    
+    // Ensure each key article has the required fields
+    for (const article of key_articles) {
+      // Ensure required fields are present
+      if (!article.confidence) {
+        article.confidence = newFormat.confidence || 'medium';
+      }
+      if (!article.title) {
+        article.title = "Untitled Article";
+      }
+      if (!article.source) {
+        article.source = "Unknown Source";
+      }
+      if (!article.url) {
+        article.url = "#";
+      }
+    }
+    
+    return {
+      sentiment,
+      direction,
+      expected_change_percent,
+      confidence_level: newFormat.confidence || 'medium',
+      summary,
+      price_drivers,
+      key_articles
+    };
   }
   
   // Organize articles by timeframe, but with stricter timeframe-specific filtering
