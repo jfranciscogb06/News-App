@@ -565,15 +565,15 @@ Select up to ${maxArticles} articles, prioritizing those with unique insights ac
               "expected_change_percent": <string estimate>,
               "confidence_level": <"high", "medium", or "low">,
               "summary": <string>,
-              "price_drivers": [
-                {
+                "price_drivers": [
+                  {
                   "factor": <string>,
                   "impact": <"positive", "negative", or "neutral">,
                   "confidence": <"high", "medium", or "low">
-                }
-              ],
-              "key_articles": [
-                {
+                  }
+                ],
+                "key_articles": [
+                  {
                   "title": <string>,
                   "url": <string>,
                   "publishedAt": <string - publication date>,
