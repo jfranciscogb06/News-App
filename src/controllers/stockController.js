@@ -73,19 +73,80 @@ class StockController {
 
   async clearCache(req, res, next) {
     try {
+      console.log('Starting complete cache clear process...');
+      
       // First, stop any ongoing cache processes
       if (cacheService && typeof cacheService.cancelAllCacheTimers === 'function') {
         cacheService.cancelAllCacheTimers();
       }
       
-      // Clear MongoDB news cache
-      const deletedCount = await NewsCache.clearAll();
+      // Get the mongoose connection
+      const mongoose = require('mongoose');
+      
+      // Helper function to drop a collection
+      const dropCollection = async (name) => {
+        try {
+          await mongoose.connection.dropCollection(name);
+          console.log(`Dropped collection: ${name}`);
+          return { success: true, message: `Dropped collection: ${name}` };
+        } catch (error) {
+          if (error.code === 26) {
+            console.log(`Collection ${name} doesn't exist, nothing to drop`);
+            return { success: true, message: `Collection ${name} doesn't exist` };
+          }
+          console.error(`Error dropping collection ${name}:`, error);
+          return { success: false, message: `Error dropping ${name}: ${error.message}` };
+        }
+      };
+      
+      // Try to drop collections directly (most aggressive approach)
+      const results = {
+        collections: [],
+        deletedEntries: 0,
+        errors: []
+      };
+      
+      // Get all collections in the database
+      const collections = await mongoose.connection.db.listCollections().toArray();
+      
+      // Track which collections to drop
+      const cachePatternsToMatch = ['cache', 'news', 'popular', 'stock', 'article'];
+      
+      // Loop through collections and drop cache-related ones
+      for (const collection of collections) {
+        const name = collection.name;
+        
+        // Check if it's a cache-related collection
+        const isCacheCollection = cachePatternsToMatch.some(pattern => 
+          name.toLowerCase().includes(pattern)
+        );
+        
+        if (isCacheCollection) {
+          const result = await dropCollection(name);
+          results.collections.push({ name, ...result });
+        }
+      }
+      
+      // Fallback: Clear MongoDB news cache if dropping collections failed
+      try {
+        const deletedCount = await NewsCache.clearAll();
+        results.deletedEntries += deletedCount;
+        console.log(`Cleared NewsCache: ${deletedCount} entries deleted`);
+      } catch (error) {
+        console.error('Error clearing NewsCache:', error);
+        results.errors.push(`NewsCache error: ${error.message}`);
+      }
       
       // Clear popular searches collection
-      const mongoose = require('mongoose');
-      const PopularSearchModel = mongoose.model('PopularSearch');
-      const searchesDeleted = await PopularSearchModel.deleteMany({});
-      console.log(`Cleared popular searches: ${searchesDeleted.deletedCount} entries deleted`);
+      try {
+        const PopularSearchModel = mongoose.model('PopularSearch');
+        const searchesDeleted = await PopularSearchModel.deleteMany({});
+        console.log(`Cleared popular searches: ${searchesDeleted.deletedCount} entries deleted`);
+        results.deletedEntries += searchesDeleted.deletedCount;
+      } catch (error) {
+        console.error('Error clearing PopularSearch:', error);
+        results.errors.push(`PopularSearch error: ${error.message}`);
+      }
       
       // Clear popular stocks cache if cacheService is available
       let popularCacheCleared = false;
@@ -96,14 +157,25 @@ class StockController {
       // Reset any application-level caches or variables
       global.cacheLastRefreshed = null;
       
+      // Force garbage collection if available
+      if (global.gc) {
+        console.log('Running garbage collection...');
+        global.gc();
+      }
+      
       // Send response - let the system restart the caching process on its own
       res.json({
         success: true,
         message: 'All caches cleared successfully',
-        newsCacheDeleted: deletedCount,
-        searchesDeleted: searchesDeleted.deletedCount,
-        popularCacheCleared
+        details: {
+          collections: results.collections,
+          deletedEntries: results.deletedEntries,
+          popularCacheCleared,
+          errors: results.errors
+        }
       });
+      
+      console.log('Cache clearing complete. Server should be restarted for a full reset.');
     } catch (error) {
       console.error('Error clearing cache:', error);
       next(error);

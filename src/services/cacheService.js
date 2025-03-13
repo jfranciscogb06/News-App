@@ -431,6 +431,8 @@ class CacheService {
    */
   async clearPopularCache() {
     try {
+      console.log('Starting full cache clearing process...');
+      
       // Cancel all ongoing cache operations
       this.cancelAllCacheTimers();
       
@@ -460,8 +462,46 @@ class CacheService {
       
       console.log('All internal cache state reset');
       
+      // Clear any global cache that might exist
+      if (global.stockCache) {
+        global.stockCache = new Map();
+        console.log('Global stock cache cleared');
+      }
+      
+      if (global.newsCache) {
+        global.newsCache = new Map();
+        console.log('Global news cache cleared');
+      }
+      
+      // Clear MongoDB caches directly
+      try {
+        const mongoose = require('mongoose');
+        
+        // List of collection names we want to clear
+        const collectionsToCheck = [
+          'newscaches',
+          'popularsearches',
+          'stockcaches'
+        ];
+        
+        for (const collectionName of collectionsToCheck) {
+          try {
+            const exists = await mongoose.connection.db.listCollections({name: collectionName}).hasNext();
+            if (exists) {
+              await mongoose.connection.db.collection(collectionName).deleteMany({});
+              console.log(`MongoDB collection ${collectionName} cleared`);
+            }
+          } catch (collectionError) {
+            console.error(`Error clearing collection ${collectionName}:`, collectionError);
+          }
+        }
+      } catch (mongoError) {
+        console.error('Error accessing MongoDB collections:', mongoError);
+      }
+      
       // Restart the staggered caching process with fresh data
       setTimeout(() => {
+        console.log('Restarting staggered caching with fresh data...');
         this.startStaggeredCaching();
       }, 1000); // Small delay to ensure clean restart
       
