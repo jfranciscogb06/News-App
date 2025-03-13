@@ -2,6 +2,7 @@ const newsService = require('../services/newsService');
 const openaiService = require('../services/openaiService');
 const NewsCache = require('../models/newsCache');
 const cacheService = require('../services/cacheService');
+const sourceValidationService = require('../services/sourceValidationService');
 
 class StockController {
   async analyzeStock(req, res, next) {
@@ -50,18 +51,37 @@ class StockController {
       // Use OpenAI to analyze the collected articles
       const analysis = await openaiService.analyzeArticles(symbol, articles);
       
+      // Add source validation metadata to the analysis
+      // This enhances the response with credibility info for each key article
+      for (const timeframe in analysis) {
+        if (analysis[timeframe] && analysis[timeframe].key_articles) {
+          analysis[timeframe].key_articles = analysis[timeframe].key_articles.map(article => {
+            // Only validate articles that weren't validated during collection
+            if (!article.credibilityScore) {
+              const validatedArticle = sourceValidationService.validateArticleSource(article);
+              return validatedArticle;
+            }
+            return article;
+          });
+        }
+      }
+      
       // Save to regular cache
       await NewsCache.save(symbol, analysis);
       
       // Clean expired cache entries in the background
       NewsCache.cleanExpired().catch(err => console.error('Error cleaning cache:', err));
       
+      // Add some metadata about source credibility to the response
+      const sourceCredibilityStats = this.calculateSourceCredibilityStats(analysis);
+      
       const result = {
         symbol,
         timestamp: new Date(),
         analysis,
         source: 'fresh',
-        articleCount: count
+        articleCount: count,
+        sourceCredibility: sourceCredibilityStats
       };
 
       res.json(result);
@@ -69,6 +89,84 @@ class StockController {
       console.error('Analysis error:', error);
       next(error);
     }
+  }
+  
+  // Helper method to calculate source credibility statistics
+  calculateSourceCredibilityStats(analysis) {
+    const allKeyArticles = [];
+    
+    // Collect all key articles from all timeframes
+    for (const timeframe in analysis) {
+      if (analysis[timeframe] && analysis[timeframe].key_articles) {
+        allKeyArticles.push(...analysis[timeframe].key_articles);
+      }
+    }
+    
+    // Initialize statistics
+    const stats = {
+      averageCredibilityScore: 0,
+      credibilityDistribution: {
+        high: 0,
+        credible: 0,
+        moderate: 0,
+        questionable: 0,
+        low: 0
+      },
+      sourcesUsed: [],
+      politicalBalanceIndex: 0, // 0 means balanced, positive means right-leaning, negative means left-leaning
+    };
+    
+    if (allKeyArticles.length === 0) {
+      return stats;
+    }
+    
+    // Calculate average credibility score
+    let totalScore = 0;
+    let articleCount = 0;
+    let leftBiasCount = 0;
+    let rightBiasCount = 0;
+    const sourceDomains = new Set();
+    
+    allKeyArticles.forEach(article => {
+      if (article.credibilityScore && article.credibilityScore.score) {
+        totalScore += article.credibilityScore.score;
+        articleCount++;
+        
+        // Track credibility distribution
+        const rating = article.credibilityScore.rating;
+        if (rating === 'high credibility') stats.credibilityDistribution.high++;
+        else if (rating === 'credible') stats.credibilityDistribution.credible++;
+        else if (rating === 'moderate credibility') stats.credibilityDistribution.moderate++;
+        else if (rating === 'questionable') stats.credibilityDistribution.questionable++;
+        else if (rating === 'low credibility') stats.credibilityDistribution.low++;
+        
+        // Track bias balance
+        if (article.biasAssessment) {
+          if (['moderate-left', 'strong-left'].includes(article.biasAssessment.politicalBias)) {
+            leftBiasCount++;
+          } else if (['moderate-right', 'strong-right'].includes(article.biasAssessment.politicalBias)) {
+            rightBiasCount++;
+          }
+        }
+        
+        // Track unique sources
+        if (article.url) {
+          try {
+            const domain = new URL(article.url).hostname;
+            sourceDomains.add(domain);
+          } catch (e) {
+            // Ignore URL parsing errors
+          }
+        }
+      }
+    });
+    
+    // Calculate the statistics
+    stats.averageCredibilityScore = articleCount > 0 ? Math.round(totalScore / articleCount) : 0;
+    stats.politicalBalanceIndex = rightBiasCount - leftBiasCount;
+    stats.sourcesUsed = Array.from(sourceDomains);
+    
+    return stats;
   }
 
   async clearCache(req, res, next) {

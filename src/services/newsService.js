@@ -2,6 +2,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const config = require('../config/config');
 const openaiService = require('./openaiService');
+const sourceValidationService = require('./sourceValidationService');
 
 class NewsService {
   constructor() {
@@ -776,6 +777,16 @@ class NewsService {
       articles = this.filterArticlesByKeywords(symbol, articles);
       
       console.log(`Found ${articles.length} relevant articles after filtering`);
+      
+      // Apply source validation to filter out unreliable or heavily biased sources
+      articles = sourceValidationService.filterArticlesByCredibility(articles, {
+        minCredibilityScore: 50,        // Only keep articles with at least moderate credibility
+        excludeOpinions: false,         // Include opinion pieces (can be useful for sentiment)
+        maxSensationalism: 'moderate',  // Filter out highly sensationalist articles
+        balanceBias: true               // Try to maintain political balance in sources
+      });
+      
+      console.log(`Filtered to ${articles.length} articles after credibility validation`);
       
       // Limit to maxArticles
       articles = articles.slice(0, maxArticles);
