@@ -452,61 +452,38 @@ Select up to ${maxArticles} articles, prioritizing those with unique insights ac
       }
 
       // Process each timeframe separately
-      const results = {};
+      const analysis = {};
       
-      for (const timeframe of timeframes) {
+      // Create promises for all timeframes to process in parallel
+      const timeframePromises = timeframes.map(async timeframe => {
         const relevantArticles = timeframeArticles[timeframe];
+        let timeframeAnalysis;
+        
         if (relevantArticles.length === 0) {
           console.log(`No articles found for timeframe: ${timeframe}, using general articles`);
           // If no specific articles for this timeframe, use a subset of all articles
-          results[timeframe] = this.analyzeSingleTimeframe(symbol, timeframe, articles.slice(0, 20));
+          timeframeAnalysis = await this.analyzeSingleTimeframe(symbol, timeframe, articles.slice(0, 20));
         } else {
           console.log(`Analyzing ${timeframe} with ${relevantArticles.length} relevant articles`);
-          results[timeframe] = this.analyzeSingleTimeframe(symbol, timeframe, relevantArticles);
+          timeframeAnalysis = await this.analyzeSingleTimeframe(symbol, timeframe, relevantArticles);
         }
-      }
-      
-      // Combine the results into a single analysis object that clearly separates by timeframe
-      const result = {
-        '7days': {
-          ...results['7days'],
-          timeframe_label: 'Next 7 Days',
-          display_order: 1
-        },
-        '1month': {
-          ...results['1month'],
-          timeframe_label: 'Next Month',
-          display_order: 2
-        },
-        '3months': {
-          ...results['3months'],
-          timeframe_label: 'Next 3 Months',
-          display_order: 3
-        },
-        '6months': {
-          ...results['6months'],
-          timeframe_label: 'Next 6 Months',
-          display_order: 4
-        }
-      };
-      
-      // Enhance key articles to make timeframe more prominent
-      Object.keys(result).forEach(timeframe => {
-        if (result[timeframe].key_articles && Array.isArray(result[timeframe].key_articles)) {
-          result[timeframe].key_articles = result[timeframe].key_articles.map(article => {
-            return {
-              ...article,
-              timeframe_label: result[timeframe].timeframe_label,
-              for_timeframe: timeframe
-            };
-          });
-        }
+        
+        // Store the result with the timeframe as the key
+        return { timeframe, analysis: timeframeAnalysis };
       });
+      
+      // Wait for all timeframe analyses to complete
+      const results = await Promise.all(timeframePromises);
+      
+      // Combine results into the analysis object
+      for (const result of results) {
+        analysis[result.timeframe] = result.analysis;
+      }
       
       // Validate structure of the response
       try {
-        this.validateAnalysisStructure(result);
-        return result;
+        this.validateAnalysisStructure(analysis);
+        return analysis;
       } catch (error) {
         console.error('Invalid analysis structure:', error);
         throw new Error(`Invalid analysis structure: ${error.message}`);
@@ -698,6 +675,13 @@ Content: ${article.description || article.content || 'No content available'}
     if (newFormat.sentiment !== undefined && 
         newFormat.direction !== undefined && 
         newFormat.expected_change_percent !== undefined) {
+      // Still add timeframe_label and display_order if missing
+      if (!newFormat.timeframe_label) {
+        newFormat.timeframe_label = this.getTimeframeLabel(timeframe);
+      }
+      if (!newFormat.display_order) {
+        newFormat.display_order = this.getDisplayOrder(timeframe);
+      }
       return newFormat;
     }
     
@@ -776,6 +760,12 @@ Content: ${article.description || article.content || 'No content available'}
     // Ensure key_articles have the right format
     const key_articles = newFormat.key_articles || [];
     
+    // Get timeframe label
+    const timeframe_label = this.getTimeframeLabel(timeframe);
+    
+    // Get display order
+    const display_order = this.getDisplayOrder(timeframe);
+    
     // Ensure each key article has the required fields
     for (const article of key_articles) {
       // Ensure required fields are present
@@ -791,6 +781,15 @@ Content: ${article.description || article.content || 'No content available'}
       if (!article.url) {
         article.url = "#";
       }
+      
+      // Add timeframe information to each article
+      if (!article.timeframe_label) {
+        article.timeframe_label = timeframe_label;
+      }
+      
+      if (!article.for_timeframe) {
+        article.for_timeframe = timeframe;
+      }
     }
     
     return {
@@ -800,8 +799,34 @@ Content: ${article.description || article.content || 'No content available'}
       confidence_level: newFormat.confidence || 'medium',
       summary,
       price_drivers,
-      key_articles
+      key_articles,
+      timeframe_label,
+      display_order
     };
+  }
+  
+  // Helper to get standardized timeframe label
+  getTimeframeLabel(timeframe) {
+    const labels = {
+      '7days': 'Next 7 Days',
+      '1month': 'Next Month',
+      '3months': 'Next 3 Months',
+      '6months': 'Next 6 Months'
+    };
+    
+    return labels[timeframe] || `Next ${timeframe}`;
+  }
+
+  // Helper to get display order
+  getDisplayOrder(timeframe) {
+    const orders = {
+      '7days': 1,
+      '1month': 2,
+      '3months': 3,
+      '6months': 4
+    };
+    
+    return orders[timeframe] || 0;
   }
   
   // Organize articles by timeframe, but with stricter timeframe-specific filtering
