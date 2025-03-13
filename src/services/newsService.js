@@ -459,17 +459,28 @@ class NewsService {
     // Essential keywords - at least one must be present
     const essentialKeywords = [symbol.toLowerCase(), 'stock', 'share', 'price', 'market', 'trading', 'earnings'];
     
-    // REMOVED: Date filtering - we'll let OpenAI handle relevance instead
-    // Just log info about article age distribution for diagnostic purposes
+    // Define date thresholds for different timeframes
     const now = new Date();
-    const oneYearAgo = new Date();
-    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
     
+    // Strict timeframe thresholds (stricter than before)
+    const sixMonthsAgo = new Date(now);
+    sixMonthsAgo.setMonth(now.getMonth() - 6);
+    
+    const threeMonthsAgo = new Date(now);
+    threeMonthsAgo.setMonth(now.getMonth() - 3);
+    
+    const oneMonthAgo = new Date(now);
+    oneMonthAgo.setMonth(now.getMonth() - 1);
+    
+    const twoWeeksAgo = new Date(now);
+    twoWeeksAgo.setDate(now.getDate() - 14);
+    
+    // Log article age distribution before filtering
     const ageGroups = {
-      recent: 0,      // < 1 month
-      moderate: 0,    // 1-6 months 
-      older: 0,       // 6-12 months
-      historical: 0   // > 1 year
+      recent: 0,      // < 2 weeks
+      moderate: 0,    // 2 weeks - 1 month 
+      older: 0,       // 1-3 months
+      historical: 0   // 3-6 months
     };
     
     articles.forEach(article => {
@@ -488,15 +499,13 @@ class NewsService {
         }
         
         if (pubDate && !isNaN(pubDate.getTime())) {
-          const daysSincePublished = Math.floor((now - pubDate) / (1000 * 60 * 60 * 24));
-          
-          if (daysSincePublished < 30) {
+          if (pubDate > twoWeeksAgo) {
             ageGroups.recent++;
-          } else if (daysSincePublished < 180) {
+          } else if (pubDate > oneMonthAgo) {
             ageGroups.moderate++;
-          } else if (daysSincePublished < 365) {
+          } else if (pubDate > threeMonthsAgo) {
             ageGroups.older++;
-          } else {
+          } else if (pubDate > sixMonthsAgo) {
             ageGroups.historical++;
           }
         }
@@ -507,8 +516,30 @@ class NewsService {
     
     console.log(`Article age distribution: Recent: ${ageGroups.recent}, Moderate: ${ageGroups.moderate}, Older: ${ageGroups.older}, Historical: ${ageGroups.historical}`);
     
+    // Filter articles - remove anything older than 6 months
+    let filteredArticles = articles.filter(article => {
+      let pubDate;
+      if (article.publishedDate && article.publishedDate instanceof Date) {
+        pubDate = article.publishedDate;
+      } else if (article.pubDate) {
+        pubDate = new Date(article.pubDate);
+      } else if (article.publishedAt) {
+        const dateMatch = article.publishedAt.match(/(\w+, )?(\w+ \d{1,2}, \d{4})/);
+        if (dateMatch && dateMatch[2]) {
+          pubDate = new Date(dateMatch[2]);
+        }
+      }
+      
+      // Filter out articles older than 6 months
+      if (pubDate && !isNaN(pubDate.getTime()) && pubDate < sixMonthsAgo) {
+        return false;
+      }
+      
+      return true;
+    });
+    
     // Process articles and calculate relevance scores
-    const scoredArticles = articles.map(article => {
+    const scoredArticles = filteredArticles.map(article => {
       const combinedText = (article.title + ' ' + article.description).toLowerCase();
       
       // Article must contain the stock symbol to be considered
@@ -554,8 +585,26 @@ class NewsService {
         if (article.queryContext.includes('merger') || article.queryContext.includes('acquisition')) relevanceScore *= 1.3;
       }
       
+      // Determine publication date for timeframe relevance
+      let pubDate;
+      if (article.publishedDate && article.publishedDate instanceof Date) {
+        pubDate = article.publishedDate;
+      } else if (article.pubDate) {
+        pubDate = new Date(article.pubDate);
+      } else if (article.publishedAt) {
+        const dateMatch = article.publishedAt.match(/(\w+, )?(\w+ \d{1,2}, \d{4})/);
+        if (dateMatch && dateMatch[2]) {
+          pubDate = new Date(dateMatch[2]);
+        }
+      } else {
+        pubDate = new Date(); // Default to now if no date found
+      }
+      
       // Calculate separate scores for each timeframe using the timeframe relevance
+      // Apply timeframe-specific recency boosts
       const timeframeScores = {};
+      
+      // Base score from content relevance
       if (article.timeframeRelevance) {
         for (const [timeframe, score] of Object.entries(article.timeframeRelevance)) {
           timeframeScores[timeframe] = relevanceScore * (1 + score * 0.1); // Boost by 10% per relevance point
@@ -568,15 +617,43 @@ class NewsService {
         timeframeScores['6months'] = relevanceScore;
       }
       
+      // Apply timeframe-specific recency boosts based on publication date
+      if (pubDate && !isNaN(pubDate.getTime())) {
+        // 7-day forecasts: strong boost for very recent articles (0-14 days)
+        if (pubDate > twoWeeksAgo) {
+          timeframeScores['7days'] *= 2.0; // Double score for very recent articles
+        } else {
+          timeframeScores['7days'] *= 0.5; // Halve score for older articles
+        }
+        
+        // 1-month forecasts: boost for articles under 1 month
+        if (pubDate > oneMonthAgo) {
+          timeframeScores['1month'] *= 1.5; // 50% boost for recent articles
+        } else {
+          timeframeScores['1month'] *= 0.8; // Slight penalty for older articles
+        }
+        
+        // 3-month forecasts: boost for articles under 3 months
+        if (pubDate > threeMonthsAgo) {
+          timeframeScores['3months'] *= 1.3; // 30% boost for recent articles
+        }
+        
+        // 6-month forecasts: slight boost for recent articles, but all are relevant
+        if (pubDate > threeMonthsAgo) {
+          timeframeScores['6months'] *= 1.1; // 10% boost for recent articles
+        }
+      }
+      
       return { 
         ...article, 
         relevanceScore,
-        timeframeScores
+        timeframeScores,
+        pubDate // Keep the parsed date for further processing
       };
     });
     
     // Filter out low relevance articles
-    const filteredArticles = scoredArticles
+    const relevantArticles = scoredArticles
       .filter(article => article.relevanceScore > 15) // Keep only articles with significant relevance
       .sort((a, b) => b.relevanceScore - a.relevanceScore); // Sort by relevance score
     
@@ -590,7 +667,7 @@ class NewsService {
     
     // Assign each article to the timeframe(s) where it has the highest score
     // An article can belong to multiple timeframes if it's relevant to multiple periods
-    for (const article of filteredArticles) {
+    for (const article of relevantArticles) {
       const scores = article.timeframeScores || {};
       
       // Find the highest score
@@ -615,7 +692,7 @@ class NewsService {
     console.log(`Timeframe coverage: 7 days: ${timeframeGroups['7days'].length}, 1 month: ${timeframeGroups['1month'].length}, 3 months: ${timeframeGroups['3months'].length}, 6 months: ${timeframeGroups['6months'].length}`);
     
     // Return the merged list, preserving the overall relevance ordering
-    return filteredArticles;
+    return relevantArticles;
   }
 
   checkForFutureTerms(text) {
@@ -853,14 +930,68 @@ class NewsService {
     const now = new Date();
     const daysSincePublished = Math.floor((now - publishedDate) / (1000 * 60 * 60 * 24));
     
+    // Super recent articles (0-3 days)
     if (daysSincePublished < 3) {
-      return { '7days': 5, '1month': 3, '3months': 2, '6months': 1 };
-    } else if (daysSincePublished < 7) {
-      return { '7days': 2, '1month': 2, '3months': 1, '6months': 1 };
-    } else if (daysSincePublished < 30) {
-      return { '7days': 1, '1month': 3, '3months': 1, '6months': 1 };
-    } else {
-      return { '7days': 0, '1month': 2, '3months': 2, '6months': 2 };
+      return { 
+        '7days': 5,    // Highest relevance for 7-day predictions
+        '1month': 4,   // Very high relevance for 1-month
+        '3months': 3,  // High relevance for 3-months
+        '6months': 2   // Moderate relevance for 6-months
+      };
+    } 
+    // Very recent articles (4-7 days)
+    else if (daysSincePublished < 7) {
+      return { 
+        '7days': 4,    // High relevance for 7-day predictions
+        '1month': 4,   // High relevance for 1-month
+        '3months': 3,  // Good relevance for 3-months
+        '6months': 2   // Moderate relevance for 6-months
+      };
+    } 
+    // Recent articles (8-14 days)
+    else if (daysSincePublished < 14) {
+      return { 
+        '7days': 3,    // Good relevance for 7-day predictions
+        '1month': 4,   // High relevance for 1-month
+        '3months': 3,  // Good relevance for 3-months
+        '6months': 2   // Moderate relevance for 6-months
+      };
+    } 
+    // Moderately recent (15-30 days)
+    else if (daysSincePublished < 30) {
+      return { 
+        '7days': 1,    // Low relevance for 7-day predictions
+        '1month': 4,   // High relevance for 1-month
+        '3months': 3,  // Good relevance for 3-months
+        '6months': 2   // Moderate relevance for 6-months
+      };
+    } 
+    // Getting older (31-90 days)
+    else if (daysSincePublished < 90) {
+      return { 
+        '7days': 0,    // Not relevant for 7-day predictions
+        '1month': 2,   // Low relevance for 1-month
+        '3months': 4,  // High relevance for 3-months
+        '6months': 3   // Good relevance for 6-months
+      };
+    } 
+    // Older articles (91-180 days)
+    else if (daysSincePublished < 180) {
+      return { 
+        '7days': 0,    // Not relevant for 7-day predictions
+        '1month': 0,   // Not relevant for 1-month
+        '3months': 2,  // Low relevance for 3-months
+        '6months': 4   // High relevance for 6-months
+      };
+    }
+    // Very old articles (>180 days) - these should be filtered out entirely
+    else {
+      return { 
+        '7days': 0,
+        '1month': 0,
+        '3months': 0,
+        '6months': 0
+      };
     }
   }
 }
