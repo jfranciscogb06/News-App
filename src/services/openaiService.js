@@ -562,10 +562,13 @@ Select up to ${maxArticles} articles, prioritizing those with unique insights ac
         - Title
         - Source
         - URL
-        - Impact summary (1-2 sentences on why this article is significant)
+        - Impact summary (2-3 detailed sentences on what the article reveals and why it's significant for stock movement)
         - Confidence in this article (high/medium/low, factoring in source credibility)
         
-        IMPORTANT: Your prediction MUST be one of exactly three values: "UP", "DOWN", or "SIDEWAYS" (all caps).
+        IMPORTANT: 
+        - Your prediction MUST be one of exactly three values: "UP", "DOWN", or "SIDEWAYS" (all caps).
+        - Article impact summaries should be substantive and informative, not just paraphrases of the title.
+        - Include specific facts, figures, analyst opinions, or key developments from the article in your summaries.
         
         Return your analysis as a JSON object with this structure:
         {
@@ -578,7 +581,7 @@ Select up to ${maxArticles} articles, prioritizing those with unique insights ac
               "title": "Article title",
               "source": "Source name",
               "url": "Article URL",
-              "impact_summary": "1-2 sentence summary of impact",
+              "impact_summary": "2-3 detailed sentences on what the article reveals and why it's significant",
               "confidence": "high|medium|low"
             },
             ...
@@ -780,6 +783,33 @@ Content: ${article.description || article.content || 'No content available'}
       }
       if (!article.url) {
         article.url = "#";
+      }
+      
+      // Ensure each article has a date, use current date if not present
+      if (!article.publishedAt) {
+        const formattedDate = new Date().toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        article.publishedAt = formattedDate;
+      }
+      
+      // Ensure impact_summary is present and substantive
+      if (!article.impact_summary) {
+        // Create a default detailed summary if none exists
+        const impactDirection = direction === 'up' ? 'positive' : direction === 'down' ? 'negative' : 'neutral';
+        article.impact_summary = `This article provides ${impactDirection} insights regarding ${symbol}'s performance. It includes key information that contributes to the overall ${newFormat.confidence || 'medium'} confidence prediction for ${timeframe_label}.`;
+      }
+      
+      // Remove sourceCredibility fields if they're all unknown
+      if (article.sourceCredibility) {
+        if (article.sourceCredibility.reliability === 'unknown' && 
+            article.sourceCredibility.bias === 'unknown' && 
+            article.sourceCredibility.factualReporting === 'unknown') {
+          delete article.sourceCredibility;
+        }
       }
       
       // Add timeframe information to each article

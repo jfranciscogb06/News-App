@@ -1,82 +1,72 @@
 const newsService = require('../services/newsService');
 const openaiService = require('../services/openaiService');
 const NewsCache = require('../models/newsCache');
-const cacheService = require('../services/cacheService');
 const sourceValidationService = require('../services/sourceValidationService');
 
 class StockController {
+  /**
+   * Analyze a stock based on news articles
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
   async analyzeStock(req, res, next) {
     try {
       const { symbol } = req.params;
       
-      // Record this search to track popular stocks
-      await cacheService.recordSearch(symbol);
-      
-      // Try to get from popular stocks cache first (pre-cached top 100)
-      const popularCachedData = await cacheService.getStockData(symbol);
-      
-      if (popularCachedData) {
-        // Return pre-cached data for popular stock
-        const result = {
-          symbol,
-          timestamp: new Date(),
-          analysis: popularCachedData,
-          source: 'popular-cache'
-        };
-        
-        return res.json(result);
+      if (!symbol || typeof symbol !== 'string') {
+        return res.status(400).json({ 
+          error: 'Invalid stock symbol',
+          message: 'Please provide a valid stock symbol'
+        });
       }
       
-      // Try to get from regular cache
-      const regularCachedData = await NewsCache.getBySymbol(symbol);
+      const normalizedSymbol = symbol.toUpperCase().trim();
+      console.log(`Processing analysis request for ${normalizedSymbol}`);
       
-      if (regularCachedData) {
-        // Return cached data
-        const result = {
-          symbol,
-          timestamp: new Date(),
-          analysis: regularCachedData,
-          source: 'cache'
-        };
-        
-        return res.json(result);
+      // Try to get from cache first
+      const cachedData = await NewsCache.getBySymbol(normalizedSymbol);
+      
+      if (cachedData) {
+        console.log(`Returning cached data for ${normalizedSymbol}`);
+        return res.json(cachedData);
       }
       
-      // If not in cache, collect news using enhanced service
-      console.log(`Collecting news for ${symbol}...`);
-      const { articles, count } = await newsService.collectAndAnalyzeNews(symbol, 30);
+      // If not in cache, collect news articles
+      console.log(`Collecting news for ${normalizedSymbol}...`);
+      const { articles, count } = await newsService.collectAndAnalyzeNews(normalizedSymbol, 30);
       
-      console.log(`Collected ${count} articles for ${symbol}, sending to OpenAI for analysis...`);
+      if (!articles || articles.length === 0) {
+        return res.status(404).json({
+          error: 'No news articles found',
+          message: `Could not find any relevant news articles for ${normalizedSymbol}`
+        });
+      }
+      
+      console.log(`Collected ${count} articles for ${normalizedSymbol}, analyzing...`);
       
       // Use OpenAI to analyze the collected articles
-      const analysis = await openaiService.analyzeArticles(symbol, articles);
+      const analysis = await openaiService.analyzeArticles(normalizedSymbol, articles);
       
       // Add source validation metadata to the analysis
-      // This enhances the response with credibility info for each key article
       for (const timeframe in analysis) {
         if (analysis[timeframe] && analysis[timeframe].key_articles) {
           analysis[timeframe].key_articles = analysis[timeframe].key_articles.map(article => {
             // Only validate articles that weren't validated during collection
             if (!article.credibilityScore) {
-              const validatedArticle = sourceValidationService.validateArticleSource(article);
-              return validatedArticle;
+              return sourceValidationService.validateArticleSource(article);
             }
             return article;
           });
         }
       }
       
-      // Save to regular cache
-      await NewsCache.save(symbol, analysis);
-      
-      // Clean expired cache entries in the background
-      NewsCache.cleanExpired().catch(err => console.error('Error cleaning cache:', err));
-      
-      // Add some metadata about source credibility to the response
+      // Calculate source credibility statistics
       const sourceCredibilityStats = this.calculateSourceCredibilityStats(analysis);
       
+      // Create the response object
       const result = {
-        symbol,
+        symbol: normalizedSymbol,
         timestamp: new Date(),
         analysis,
         source: 'fresh',
@@ -84,14 +74,38 @@ class StockController {
         sourceCredibility: sourceCredibilityStats
       };
 
+      // Save to cache with a 30-minute TTL
+      await NewsCache.save(normalizedSymbol, analysis, {
+        sourceCredibility: sourceCredibilityStats,
+        articleCount: count,
+        ttlHours: 0.5
+      });
+      
+      // Clean expired cache entries in the background
+      NewsCache.cleanExpired().catch(err => console.error('Error cleaning cache:', err));
+
       res.json(result);
     } catch (error) {
-      console.error('Analysis error:', error);
+      console.error('Error in stock analysis:', error);
+      
+      // If it's a specific OpenAI error, provide a better response
+      if (error.message && error.message.includes('Invalid analysis structure')) {
+        return res.status(500).json({
+          error: 'An error occurred while analyzing the stock',
+          details: error.message,
+          suggestion: 'The analysis could not be properly structured. This may be due to insufficient news data or an issue with the OpenAI service.'
+        });
+      }
+      
       next(error);
     }
   }
   
-  // Helper method to calculate source credibility statistics
+  /**
+   * Calculate credibility statistics for sources in the analysis
+   * @param {Object} analysis - The analysis object containing key articles
+   * @returns {Object} Statistics about source credibility
+   */
   calculateSourceCredibilityStats(analysis) {
     const allKeyArticles = [];
     
@@ -169,111 +183,28 @@ class StockController {
     return stats;
   }
 
+  /**
+   * Clear all caches in the system
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
   async clearCache(req, res, next) {
     try {
-      console.log('Starting complete cache clear process...');
+      console.log('Starting cache clearing process...');
       
-      // First, stop any ongoing cache processes
-      if (cacheService && typeof cacheService.cancelAllCacheTimers === 'function') {
-        cacheService.cancelAllCacheTimers();
-      }
+      // Clear the MongoDB news cache
+      const clearCount = await NewsCache.clearAll();
       
-      // Get the mongoose connection
-      const mongoose = require('mongoose');
-      
-      // Helper function to drop a collection
-      const dropCollection = async (name) => {
-        try {
-          await mongoose.connection.dropCollection(name);
-          console.log(`Dropped collection: ${name}`);
-          return { success: true, message: `Dropped collection: ${name}` };
-        } catch (error) {
-          if (error.code === 26) {
-            console.log(`Collection ${name} doesn't exist, nothing to drop`);
-            return { success: true, message: `Collection ${name} doesn't exist` };
-          }
-          console.error(`Error dropping collection ${name}:`, error);
-          return { success: false, message: `Error dropping ${name}: ${error.message}` };
-        }
-      };
-      
-      // Try to drop collections directly (most aggressive approach)
-      const results = {
-        collections: [],
-        deletedEntries: 0,
-        errors: []
-      };
-      
-      // Get all collections in the database
-      const collections = await mongoose.connection.db.listCollections().toArray();
-      
-      // Track which collections to drop
-      const cachePatternsToMatch = ['cache', 'news', 'popular', 'stock', 'article'];
-      
-      // Loop through collections and drop cache-related ones
-      for (const collection of collections) {
-        const name = collection.name;
-        
-        // Check if it's a cache-related collection
-        const isCacheCollection = cachePatternsToMatch.some(pattern => 
-          name.toLowerCase().includes(pattern)
-        );
-        
-        if (isCacheCollection) {
-          const result = await dropCollection(name);
-          results.collections.push({ name, ...result });
-        }
-      }
-      
-      // Fallback: Clear MongoDB news cache if dropping collections failed
-      try {
-        const deletedCount = await NewsCache.clearAll();
-        results.deletedEntries += deletedCount;
-        console.log(`Cleared NewsCache: ${deletedCount} entries deleted`);
-      } catch (error) {
-        console.error('Error clearing NewsCache:', error);
-        results.errors.push(`NewsCache error: ${error.message}`);
-      }
-      
-      // Clear popular searches collection
-      try {
-        const PopularSearchModel = mongoose.model('PopularSearch');
-        const searchesDeleted = await PopularSearchModel.deleteMany({});
-        console.log(`Cleared popular searches: ${searchesDeleted.deletedCount} entries deleted`);
-        results.deletedEntries += searchesDeleted.deletedCount;
-      } catch (error) {
-        console.error('Error clearing PopularSearch:', error);
-        results.errors.push(`PopularSearch error: ${error.message}`);
-      }
-      
-      // Clear popular stocks cache if cacheService is available
-      let popularCacheCleared = false;
-      if (cacheService && typeof cacheService.clearPopularCache === 'function') {
-        popularCacheCleared = await cacheService.clearPopularCache();
-      }
-      
-      // Reset any application-level caches or variables
-      global.cacheLastRefreshed = null;
-      
-      // Force garbage collection if available
-      if (global.gc) {
-        console.log('Running garbage collection...');
-        global.gc();
-      }
-      
-      // Send response - let the system restart the caching process on its own
       res.json({
         success: true,
-        message: 'All caches cleared successfully',
+        message: 'Cache cleared successfully',
         details: {
-          collections: results.collections,
-          deletedEntries: results.deletedEntries,
-          popularCacheCleared,
-          errors: results.errors
+          entriesRemoved: clearCount
         }
       });
       
-      console.log('Cache clearing complete. Server should be restarted for a full reset.');
+      console.log('Cache clearing complete');
     } catch (error) {
       console.error('Error clearing cache:', error);
       next(error);

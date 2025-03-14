@@ -50,8 +50,8 @@ class SourceValidationService {
       'stocktwits.com': { reliability: 'low', bias: 'center', factualReporting: 'mixed' },
       'reddit.com': { reliability: 'low', bias: 'varies', factualReporting: 'mixed' },
       
-      // Default for unknown sources
-      'default': { reliability: 'unknown', bias: 'unknown', factualReporting: 'unknown' }
+      // Default for unknown sources - now empty object, will handle in getSourceInfo
+      'default': {}
     };
     
     // Terms that might indicate bias
@@ -85,7 +85,7 @@ class SourceValidationService {
    */
   validateArticleSource(article) {
     if (!article || !article.url) {
-      return { ...article, sourceCredibility: 'unknown', biasAssessment: 'unknown' };
+      return { ...article, biasAssessment: 'unknown' };
     }
     
     // Extract domain from URL
@@ -100,10 +100,9 @@ class SourceValidationService {
     // Generate a credibility score
     const credibilityScore = this.calculateCredibilityScore(sourceInfo, biasAssessment);
     
-    // Return article with added credibility information
+    // Return article with added credibility information, but remove unknown values
     return {
       ...article,
-      sourceCredibility: sourceInfo,
       biasAssessment,
       credibilityScore,
       isOpinionContent: this.isLikelyOpinion(article)
@@ -111,41 +110,58 @@ class SourceValidationService {
   }
   
   /**
-   * Extract domain from a URL
-   * @param {string} url - Full article URL
+   * Extract domain from URL
+   * @param {string} url - URL to extract domain from
    * @returns {string} Domain name
    */
   extractDomain(url) {
     try {
-      // Remove protocol and get domain
-      const domain = url.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split('/')[0].toLowerCase();
-      return domain;
+      // Handle if URL already starts with a domain
+      if (!url.startsWith('http')) {
+        url = 'https://' + url;
+      }
+      
+      const hostname = new URL(url).hostname;
+      // Extract the base domain (e.g., get wsj.com from www.wsj.com)
+      const parts = hostname.split('.');
+      const tld = parts[parts.length - 1];
+      const domain = parts[parts.length - 2];
+      
+      // Special case for co.uk and similar
+      if (parts.length > 2 && tld.length === 2 && domain === 'co') {
+        return `${parts[parts.length - 3]}.${domain}.${tld}`;
+      }
+      
+      return `${domain}.${tld}`;
     } catch (error) {
-      console.error('Error extracting domain:', error);
-      return '';
+      return url; // Return original URL if parsing fails
     }
   }
   
   /**
-   * Get source information from the database
-   * @param {string} domain - Domain name
-   * @returns {Object} Source reliability information
+   * Get source reliability information
+   * @param {string} domain - Domain to lookup
+   * @returns {Object} Source reliability info
    */
   getSourceInfo(domain) {
-    // Check exact domain match
-    if (this.sourceReliabilityDatabase[domain]) {
+    // Try to find in the database
+    if (domain && this.sourceReliabilityDatabase[domain]) {
       return this.sourceReliabilityDatabase[domain];
     }
     
-    // Check for partial domain matches
+    // Try to find by partial match
     for (const knownDomain in this.sourceReliabilityDatabase) {
-      if (domain.includes(knownDomain) || knownDomain.includes(domain)) {
+      if (knownDomain !== 'default' && domain && domain.includes(knownDomain)) {
+        return this.sourceReliabilityDatabase[knownDomain];
+      }
+      
+      if (knownDomain !== 'default' && domain && knownDomain.includes(domain)) {
         return this.sourceReliabilityDatabase[knownDomain];
       }
     }
     
-    // Return default if no match
-    return this.sourceReliabilityDatabase['default'];
+    // Return empty object for unknown domains - no longer include "unknown" values
+    return {};
   }
   
   /**

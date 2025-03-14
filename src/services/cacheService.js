@@ -336,7 +336,9 @@ class CacheService {
       
       // Also save to MongoDB for persistence with the staggered TTL
       const NewsCache = require('../models/newsCache');
-      await NewsCache.save(symbol, analysis, baseTtlMinutes);
+      await NewsCache.save(symbol, analysis, {
+        ttlHours: baseTtlMinutes / 60 // Convert minutes to hours
+      });
       console.log(`Cached ${symbol} in MongoDB with base TTL of ${baseTtlMinutes} minutes`);
     } catch (error) {
       console.error(`Error caching ${symbol}:`, error);

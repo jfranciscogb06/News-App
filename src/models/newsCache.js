@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
-const db = require('../utils/db');
 
-// Define the schema for news cache
+// Define the schema for news cache - using a clear, normalized structure
 const newsCacheSchema = new mongoose.Schema({
   symbol: {
     type: String,
@@ -10,93 +9,144 @@ const newsCacheSchema = new mongoose.Schema({
     trim: true,
     index: true
   },
-  data: {
+  analysis: {
     type: mongoose.Schema.Types.Mixed,
     required: true
   },
-  created_at: {
-    type: Date,
-    default: Date.now
+  sourceCredibility: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
   },
-  expires_at: {
+  articleCount: {
+    type: Number,
+    default: 0
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    index: true
+  },
+  expiresAt: {
     type: Date,
     required: true,
     index: true
   }
 });
 
+// Create indexes for efficient queries
+newsCacheSchema.index({ symbol: 1, expiresAt: 1 });
+
 // Create the model
 const NewsCacheModel = mongoose.model('NewsCache', newsCacheSchema);
 
+/**
+ * NewsCache class for handling caching of stock news analysis
+ */
 class NewsCache {
   /**
    * Get cached news analysis for a symbol
-   * @param {string} symbol - Stock symbol
+   * @param {string} symbol - Stock symbol to retrieve
    * @returns {Promise<Object|null>} - Cached data or null if not found/expired
    */
   static async getBySymbol(symbol) {
     try {
+      // Validate input
+      if (!symbol || typeof symbol !== 'string') {
+        console.error('Invalid symbol provided to cache lookup');
+        return null;
+      }
+
+      const normalizedSymbol = symbol.toUpperCase().trim();
+      
       const result = await NewsCacheModel.findOne({
-        symbol: symbol.toUpperCase(),
-        expires_at: { $gt: new Date() }
+        symbol: normalizedSymbol,
+        expiresAt: { $gt: new Date() }
       });
       
-      if (result) {
-        console.log(`Cache hit for symbol: ${symbol}`);
-        return result.data;
+      if (!result) {
+        console.log(`Cache miss for symbol: ${normalizedSymbol}`);
+        return null;
       }
       
-      console.log(`Cache miss for symbol: ${symbol}`);
-      return null;
+      console.log(`Cache hit for symbol: ${normalizedSymbol}, expires in ${this.getTimeUntilExpiry(result.expiresAt)}`);
+      
+      // Transform the data into the exact format expected by the client
+      return {
+        symbol: normalizedSymbol,
+        timestamp: new Date(),
+        analysis: result.analysis,
+        source: 'cache',
+        articleCount: result.articleCount,
+        sourceCredibility: result.sourceCredibility
+      };
     } catch (error) {
-      console.error('Error getting cache by symbol:', error);
+      console.error(`Error retrieving cache for ${symbol}:`, error);
       return null;
     }
   }
 
   /**
-   * Save news analysis to cache with staggered expiration
+   * Save analysis data to cache
    * @param {string} symbol - Stock symbol
-   * @param {Object} data - Analysis data to cache
-   * @param {number} ttlMinutes - Base time to live in minutes (default: 30)
+   * @param {Object} analysis - Analysis data to cache
+   * @param {Object} options - Additional options (sourceCredibility, articleCount, ttlHours)
    * @returns {Promise<boolean>} - Success status
    */
-  static async save(symbol, data, ttlMinutes = 30) {
+  static async save(symbol, analysis, options = {}) {
     try {
-      // Add a random offset (0-10 minutes) to stagger expirations
-      const randomOffsetMinutes = Math.floor(Math.random() * 10);
-      const totalMinutes = ttlMinutes + randomOffsetMinutes;
+      // Validate input
+      if (!symbol || !analysis) {
+        console.error('Missing required parameters for cache save');
+        return false;
+      }
+
+      const normalizedSymbol = symbol.toUpperCase().trim();
       
-      // Calculate expiration date with the staggered offset
+      // Extract options with defaults
+      const { 
+        sourceCredibility = null,
+        articleCount = 0,
+        ttlHours = 0.5 // Default TTL: 30 minutes (changed from 24 hours)
+      } = options;
+      
+      // Calculate expiration with slight randomization to prevent cache stampedes
+      const randomMinutes = Math.floor(Math.random() * 30); // 0-30 minutes of randomness
       const expiresAt = new Date();
-      expiresAt.setMinutes(expiresAt.getMinutes() + totalMinutes);
+      expiresAt.setHours(expiresAt.getHours() + ttlHours);
+      expiresAt.setMinutes(expiresAt.getMinutes() + randomMinutes);
       
-      // Delete any existing cache for this symbol
-      await NewsCacheModel.deleteMany({ symbol: symbol.toUpperCase() });
+      // Remove any existing entries for this symbol
+      await NewsCacheModel.deleteMany({ symbol: normalizedSymbol });
       
-      // Insert new cache entry
-      await NewsCacheModel.create({
-        symbol: symbol.toUpperCase(),
-        data,
-        expires_at: expiresAt
+      // Create the new cache entry
+      const cacheEntry = new NewsCacheModel({
+        symbol: normalizedSymbol,
+        analysis,
+        sourceCredibility,
+        articleCount,
+        expiresAt
       });
       
-      console.log(`Cache saved for symbol: ${symbol}, expires in ${totalMinutes} minutes (staggered)`);
+      await cacheEntry.save();
+      
+      // Log expiration time in minutes for short TTLs
+      const ttlMinutes = ttlHours * 60;
+      console.log(`Cache saved for ${normalizedSymbol}, expires in ${ttlMinutes.toFixed(0)} minutes (plus ${randomMinutes} minutes of randomness)`);
       return true;
     } catch (error) {
-      console.error('Error saving to cache:', error);
+      console.error(`Error saving cache for ${symbol}:`, error);
       return false;
     }
   }
 
   /**
-   * Delete expired cache entries
+   * Clean expired cache entries
    * @returns {Promise<number>} - Number of deleted entries
    */
   static async cleanExpired() {
     try {
       const result = await NewsCacheModel.deleteMany({
-        expires_at: { $lte: new Date() }
+        expiresAt: { $lte: new Date() }
       });
       
       const count = result.deletedCount;
@@ -113,29 +163,15 @@ class NewsCache {
 
   /**
    * Clear all cache entries
-   * @returns {Promise<number>} - Number of deleted entries
+   * @returns {Promise<number>} - Number of cleared entries
    */
   static async clearAll() {
     try {
-      // Find all entries before deletion (for logging)
-      const allEntries = await NewsCacheModel.find({}, { symbol: 1 });
-      const symbols = allEntries.map(entry => entry.symbol);
-      
-      // Use deleteMany to clear the cache
       const result = await NewsCacheModel.deleteMany({});
-      const count = result.deletedCount;
-      
-      // Log detailed information about what was cleared
-      if (count > 0) {
-        console.log(`Cleared all cache entries: ${count} entries deleted`);
-        console.log(`Cleared symbols: ${symbols.join(', ')}`);
-      } else {
-        console.log('No cache entries found to clear');
-      }
-      
-      return count;
+      console.log(`Cleared all cache: ${result.deletedCount} entries removed`);
+      return result.deletedCount;
     } catch (error) {
-      console.error('Error clearing cache:', error);
+      console.error('Error clearing all cache:', error);
       return 0;
     }
   }
@@ -143,24 +179,39 @@ class NewsCache {
   /**
    * Clear cache for a specific symbol
    * @param {string} symbol - Stock symbol
-   * @returns {Promise<number>} - Number of deleted entries
+   * @returns {Promise<number>} - Number of cleared entries
    */
   static async clearBySymbol(symbol) {
     try {
-      const result = await NewsCacheModel.deleteMany({
-        symbol: symbol.toUpperCase()
-      });
+      const normalizedSymbol = symbol.toUpperCase().trim();
+      const result = await NewsCacheModel.deleteMany({ symbol: normalizedSymbol });
       
-      const count = result.deletedCount;
-      if (count > 0) {
-        console.log(`Cleared cache for symbol ${symbol}: ${count} entries deleted`);
+      if (result.deletedCount > 0) {
+        console.log(`Cleared cache for ${normalizedSymbol}: ${result.deletedCount} entries`);
       }
       
-      return count;
+      return result.deletedCount;
     } catch (error) {
-      console.error(`Error clearing cache for symbol ${symbol}:`, error);
+      console.error(`Error clearing cache for ${symbol}:`, error);
       return 0;
     }
+  }
+
+  /**
+   * Helper to get formatted time until expiry
+   * @param {Date} expiryDate - Expiry date
+   * @returns {string} - Formatted time string
+   */
+  static getTimeUntilExpiry(expiryDate) {
+    const now = new Date();
+    const diffMs = expiryDate - now;
+    
+    if (diffMs <= 0) return 'expired';
+    
+    const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    return `${diffHrs}h ${diffMins}m`;
   }
 }
 
