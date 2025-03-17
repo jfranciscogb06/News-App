@@ -765,7 +765,7 @@ class NewsService {
   }
 
   // Process all Google News articles obtained from queries
-  async collectAndAnalyzeNews(symbol, maxArticles = 30) {
+  async collectAndAnalyzeNews(symbol, maxArticles = 50) {
     try {
       console.log(`Collecting news for ${symbol}...`);
       let articles = await this.getGoogleNewsArticles(symbol);
@@ -776,7 +776,7 @@ class NewsService {
       // Apply keyword filtering
       articles = this.filterArticlesByKeywords(symbol, articles);
       
-      console.log(`Found ${articles.length} relevant articles after filtering`);
+      console.log(`Found ${articles.length} relevant articles after keyword filtering`);
       
       // Apply source validation to filter out unreliable or heavily biased sources
       articles = sourceValidationService.filterArticlesByCredibility(articles, {
@@ -788,13 +788,19 @@ class NewsService {
       
       console.log(`Filtered to ${articles.length} articles after credibility validation`);
       
-      // Limit to maxArticles
-      articles = articles.slice(0, maxArticles);
+      // Score articles based on informational value
+      articles = this.scoreArticlesByInformationalValue(articles);
+      
+      // Sort by informational score and limit to maxArticles
+      articles = articles
+        .sort((a, b) => b.informationalScore - a.informationalScore)
+        .slice(0, maxArticles);
+      
+      console.log(`Selected ${articles.length} most informative articles for analysis`);
       
       // Process each article to get full content if needed
       const processedArticles = await Promise.all(
         articles.map(async (article) => {
-          // No need to scrape date - we already have it from the RSS feed
           return {
             ...article,
             content: article.description, // Use description as content
@@ -1004,6 +1010,68 @@ class NewsService {
         '6months': 0
       };
     }
+  }
+
+  // New method to score articles based on informational value
+  scoreArticlesByInformationalValue(articles) {
+    return articles.map(article => {
+      let score = 0;
+      const text = (article.title + ' ' + article.description).toLowerCase();
+      
+      // 1. Length and Structure (up to 20 points)
+      const wordCount = text.split(/\s+/).length;
+      if (wordCount > 500) score += 20;
+      else if (wordCount > 300) score += 15;
+      else if (wordCount > 150) score += 10;
+      else score += 5;
+      
+      // 2. Data and Statistics (up to 15 points)
+      const hasNumbers = /\d+/.test(text);
+      const hasPercentages = /\d+%/.test(text);
+      const hasFinancialTerms = /(revenue|earnings|profit|loss|margin|growth|decline)/i.test(text);
+      if (hasNumbers && hasPercentages && hasFinancialTerms) score += 15;
+      else if (hasNumbers && (hasPercentages || hasFinancialTerms)) score += 10;
+      else if (hasNumbers) score += 5;
+      
+      // 3. Analysis Depth (up to 15 points)
+      const hasAnalysis = /(analysis|report|study|research|survey|data|findings)/i.test(text);
+      const hasComparisons = /(compared|versus|versus|vs\.|versus)/i.test(text);
+      const hasContext = /(context|background|history|overview|summary)/i.test(text);
+      if (hasAnalysis && hasComparisons && hasContext) score += 15;
+      else if (hasAnalysis && (hasComparisons || hasContext)) score += 10;
+      else if (hasAnalysis) score += 5;
+      
+      // 4. Source Quality (up to 10 points)
+      if (article.credibilityScore && article.credibilityScore.score) {
+        score += Math.min(10, article.credibilityScore.score / 10);
+      }
+      
+      // 5. Recency (up to 10 points)
+      if (article.isRecent) score += 10;
+      else if (article.daysSincePublished < 7) score += 7;
+      else if (article.daysSincePublished < 14) score += 5;
+      else if (article.daysSincePublished < 30) score += 3;
+      
+      // 6. Future Outlook (up to 10 points)
+      if (article.hasFutureTerms) score += 10;
+      else if (text.includes('forecast') || text.includes('outlook')) score += 5;
+      
+      // 7. Expert Opinions (up to 10 points)
+      const hasExpertQuotes = /(said|stated|reported|announced|confirmed|revealed)/i.test(text);
+      const hasExpertSources = /(analyst|expert|researcher|economist|strategist|manager|ceo)/i.test(text);
+      if (hasExpertQuotes && hasExpertSources) score += 10;
+      else if (hasExpertQuotes || hasExpertSources) score += 5;
+      
+      // 8. Market Impact (up to 5 points)
+      if (text.includes('market impact') || text.includes('stock price') || text.includes('trading')) {
+        score += 5;
+      }
+      
+      return {
+        ...article,
+        informationalScore: score
+      };
+    });
   }
 }
 

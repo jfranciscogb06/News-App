@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const db = require('../utils/db');
 const newsService = require('./newsService');
+const openaiService = require('./openaiService');
 
 // Define the schema for popular searches
 const popularSearchSchema = new mongoose.Schema({
@@ -27,12 +28,6 @@ const PopularSearchModel = mongoose.model('PopularSearch', popularSearchSchema);
 // In-memory cache for popular stocks
 const popularStocksCache = new Map();
 
-// Default popular stocks to cache if not enough search data
-const DEFAULT_POPULAR_STOCKS = [
-  'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'JPM', 'V', 'WMT',
-  'JNJ', 'PG', 'MA', 'UNH', 'HD', 'BAC', 'XOM', 'AVGO', 'PFE', 'CSCO'
-];
-
 // Maximum number of concurrent requests
 const MAX_CONCURRENT_REQUESTS = 5;
 
@@ -44,6 +39,9 @@ const STAGGER_INTERVAL = 5 * 60 * 1000;
 
 // Number of cache groups to stagger
 const CACHE_GROUPS = 5;
+
+// Number of popular stocks to maintain
+const POPULAR_STOCKS_COUNT = 100;
 
 class CacheService {
   constructor() {
@@ -346,35 +344,109 @@ class CacheService {
   }
 
   /**
-   * Get top 100 popular stocks based on search history
-   * @returns {Promise<Array<string>>} - Array of stock symbols
+   * Get popular stocks using OpenAI
+   * @returns {Promise<Array<string>>} Array of stock symbols
+   */
+  async getPopularStocksFromOpenAI() {
+    try {
+      console.log('Getting popular stocks from OpenAI...');
+      
+      const response = await openaiService.openai.chat.completions.create({
+        model: "gpt-4",
+        messages: [
+          {
+            role: "system",
+            content: `You are a financial expert. Your task is to identify the top ${POPULAR_STOCKS_COUNT} most important and frequently traded stocks in the market.
+
+Consider these factors:
+1. Market capitalization
+2. Trading volume
+3. News coverage and media attention
+4. Industry influence
+5. Investor interest
+6. Recent market activity
+
+Return ONLY a JSON array of stock symbols (e.g., ["AAPL", "MSFT", "GOOGL"]).
+Do not include any explanations or additional text.
+Ensure all symbols are valid and currently trading.`
+          }
+        ],
+        temperature: 0.2,
+        max_tokens: 1000
+      });
+
+      const content = response.choices[0].message.content;
+      let stocks;
+      
+      try {
+        stocks = JSON.parse(content);
+      } catch (error) {
+        console.error('Error parsing OpenAI response:', error);
+        throw new Error('Invalid response format from OpenAI');
+      }
+
+      if (!Array.isArray(stocks)) {
+        throw new Error('OpenAI response is not an array');
+      }
+
+      // Validate and normalize stock symbols
+      stocks = stocks
+        .map(symbol => (symbol || '').toUpperCase().trim())
+        .filter(symbol => symbol && symbol.length <= 5 && /^[A-Z]+$/.test(symbol))
+        .slice(0, POPULAR_STOCKS_COUNT);
+
+      console.log(`Retrieved ${stocks.length} popular stocks from OpenAI`);
+      return stocks;
+    } catch (error) {
+      console.error('Error getting popular stocks from OpenAI:', error);
+      // Fallback to search history if OpenAI fails
+      return this.getPopularStocksFromSearchHistory();
+    }
+  }
+
+  /**
+   * Get popular stocks from search history
+   * @returns {Promise<Array<string>>} Array of stock symbols
+   */
+  async getPopularStocksFromSearchHistory() {
+    try {
+      const popularSearches = await PopularSearchModel.find()
+        .sort({ count: -1, last_searched: -1 })
+        .limit(POPULAR_STOCKS_COUNT);
+      
+      const symbols = popularSearches.map(item => item.symbol);
+      console.log(`Retrieved ${symbols.length} popular stocks from search history`);
+      return symbols;
+    } catch (error) {
+      console.error('Error getting popular stocks from search history:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get top 100 popular stocks
+   * @returns {Promise<Array<string>>} Array of stock symbols
    */
   async getTop100PopularStocks() {
     try {
-      // Get most searched stocks from database
-      const popularSearches = await PopularSearchModel.find()
-        .sort({ count: -1, last_searched: -1 })
-        .limit(100);
+      // First try to get from OpenAI
+      const stocks = await this.getPopularStocksFromOpenAI();
       
-      // Extract symbols
-      let symbols = popularSearches.map(item => item.symbol);
-      
-      // If we don't have 100 stocks from search history, add default popular stocks
-      if (symbols.length < 100) {
-        // Add default stocks that aren't already in the list
-        const missingCount = 100 - symbols.length;
-        const additionalStocks = DEFAULT_POPULAR_STOCKS
-          .filter(stock => !symbols.includes(stock))
-          .slice(0, missingCount);
+      // If we don't have enough stocks, supplement with search history
+      if (stocks.length < POPULAR_STOCKS_COUNT) {
+        const searchHistoryStocks = await this.getPopularStocksFromSearchHistory();
+        const additionalStocks = searchHistoryStocks
+          .filter(stock => !stocks.includes(stock))
+          .slice(0, POPULAR_STOCKS_COUNT - stocks.length);
         
-        symbols = [...symbols, ...additionalStocks];
+        stocks.push(...additionalStocks);
       }
       
-      console.log(`Retrieved ${symbols.length} popular stocks for caching`);
-      return symbols;
+      console.log(`Retrieved ${stocks.length} popular stocks for caching`);
+      return stocks;
     } catch (error) {
       console.error('Error getting popular stocks:', error);
-      return DEFAULT_POPULAR_STOCKS;
+      return [];
     }
   }
 

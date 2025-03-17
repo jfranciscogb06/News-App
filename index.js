@@ -4,6 +4,7 @@ const stockRoutes = require('./src/routes/stockRoutes');
 const cacheRoutes = require('./src/routes/cacheRoutes');
 const errorHandler = require('./src/utils/errorHandler');
 const db = require('./src/utils/db');
+const cacheService = require('./src/services/cacheService');
 
 // Initialize the app
 const app = express();
@@ -11,6 +12,8 @@ const app = express();
 // Connect to MongoDB
 db.mongoose.connection.on('connected', () => {
   console.log('MongoDB connection established successfully');
+  // Initialize cache service after MongoDB connection is established
+  cacheService.initialize();
 });
 
 // Middleware
