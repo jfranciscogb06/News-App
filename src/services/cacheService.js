@@ -366,27 +366,44 @@ Consider these factors:
 5. Investor interest
 6. Recent market activity
 
-Return ONLY a JSON array of stock symbols (e.g., ["AAPL", "MSFT", "GOOGL"]).
+Return a JSON object with a 'stocks' array containing stock symbols.
+Format example:
+{
+  "stocks": ["AAPL", "MSFT", "GOOGL"]
+}
+
 Do not include any explanations or additional text.
 Ensure all symbols are valid and currently trading.`
           }
         ],
         temperature: 0.2,
-        max_tokens: 1000
+        max_tokens: 1000,
+        response_format: { type: "json_object" }
       });
+
+      if (!response?.choices?.[0]?.message?.content) {
+        throw new Error('Invalid or empty response from OpenAI');
+      }
 
       const content = response.choices[0].message.content;
       let stocks;
       
       try {
-        stocks = JSON.parse(content);
+        // If the content is already a string (which it should be), parse it
+        stocks = typeof content === 'string' ? JSON.parse(content) : content;
+        
+        // The response should now be an object with a stocks array
+        if (stocks.stocks && Array.isArray(stocks.stocks)) {
+          stocks = stocks.stocks;
+        } else if (Array.isArray(stocks)) {
+          // If it's already an array, that's fine too
+          stocks = stocks;
+        } else {
+          throw new Error('OpenAI response does not contain a valid stocks array');
+        }
       } catch (error) {
         console.error('Error parsing OpenAI response:', error);
         throw new Error('Invalid response format from OpenAI');
-      }
-
-      if (!Array.isArray(stocks)) {
-        throw new Error('OpenAI response is not an array');
       }
 
       // Validate and normalize stock symbols
