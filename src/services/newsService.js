@@ -1073,6 +1073,49 @@ class NewsService {
       };
     });
   }
+
+  /**
+   * Find trending stocks based on Google News
+   * @returns {Promise<Array<string>>} Array of stock symbols
+   */
+  async findTrendingStocks() {
+    try {
+      // Search for trending stock terms
+      const searchTerms = [
+        'stock market movers',
+        'trending stocks',
+        'stocks to watch',
+        'market gainers',
+        'stock market news'
+      ];
+      
+      const stockSymbolRegex = /\b[A-Z]{1,5}\b/g;
+      const symbolCounts = new Map();
+      
+      // Search each term and collect stock symbols
+      for (const term of searchTerms) {
+        const articles = await this.getGoogleNewsArticles(term);
+        
+        articles.forEach(article => {
+          const content = `${article.title} ${article.description || ''}`;
+          const matches = content.match(stockSymbolRegex) || [];
+          
+          matches.forEach(symbol => {
+            symbolCounts.set(symbol, (symbolCounts.get(symbol) || 0) + 1);
+          });
+        });
+      }
+      
+      // Sort by frequency and return top symbols
+      return Array.from(symbolCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([symbol]) => symbol)
+        .slice(0, HOT_STOCKS_LIMIT);
+    } catch (error) {
+      console.error('Error finding trending stocks:', error);
+      return [];
+    }
+  }
 }
 
 module.exports = new NewsService(); 

@@ -39,6 +39,10 @@ newsCacheSchema.index({ symbol: 1, expiresAt: 1 });
 // Create the model
 const NewsCacheModel = mongoose.model('NewsCache', newsCacheSchema);
 
+// Add sentiment threshold constant
+const HOT_STOCK_SENTIMENT_THRESHOLD = 4; // Absolute sentiment score >= 4 indicates strong movement
+const HOT_STOCKS_LIMIT = 10; // Number of hot stocks to track
+
 /**
  * NewsCache class for handling caching of stock news analysis
  */
@@ -212,6 +216,93 @@ class NewsCache {
     const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
     
     return `${diffHrs}h ${diffMins}m`;
+  }
+
+  /**
+   * Find hot stocks and their most significant timeframes
+   * @returns {Promise<Array<Object>>} Array of hot stock analyses
+   */
+  static async findHotStocks() {
+    try {
+      const results = await NewsCacheModel.find({
+        expiresAt: { $gt: new Date() }
+      });
+      
+      const hotStocks = results
+        .map(entry => {
+          // Find the timeframe with the highest absolute sentiment
+          let maxSentiment = 0;
+          let significantTimeframe = null;
+          let timeframeAnalysis = null;
+
+          Object.entries(entry.analysis).forEach(([timeframe, analysis]) => {
+            const absSentiment = Math.abs(analysis.sentiment);
+            if (absSentiment > maxSentiment) {
+              maxSentiment = absSentiment;
+              significantTimeframe = timeframe;
+              timeframeAnalysis = analysis;
+            }
+          });
+
+          // Only include stocks with significant sentiment
+          if (maxSentiment >= HOT_STOCK_SENTIMENT_THRESHOLD) {
+            return {
+              symbol: entry.symbol,
+              timeframe: significantTimeframe,
+              analysis: {
+                [significantTimeframe]: timeframeAnalysis
+              },
+              sourceCredibility: entry.sourceCredibility,
+              articleCount: entry.articleCount,
+              sentimentScore: maxSentiment
+            };
+          }
+          return null;
+        })
+        .filter(stock => stock !== null)
+        // Sort by absolute sentiment score (highest first)
+        .sort((a, b) => b.sentimentScore - a.sentimentScore)
+        .slice(0, HOT_STOCKS_LIMIT);
+
+      return hotStocks;
+    } catch (error) {
+      console.error('Error finding hot stocks:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Save hot stocks analysis to cache
+   * @param {Array<Object>} stocks - Array of stock analyses with significant timeframes
+   * @returns {Promise<boolean>} - Success status
+   */
+  static async saveHotStocks(stocks) {
+    try {
+      const expiresAt = new Date();
+      expiresAt.setMinutes(expiresAt.getMinutes() + 15);
+      
+      await HotStocksModel.deleteMany({});
+      
+      const cacheEntry = new HotStocksModel({
+        stocks: stocks.map(stock => ({
+          ...stock,
+          lastUpdated: new Date()
+        })),
+        expiresAt
+      });
+      
+      await cacheEntry.save();
+      
+      const timeframeDetails = stocks.map(s => 
+        `${s.symbol}(${s.timeframe}:${s.sentimentScore})`
+      ).join(', ');
+      
+      console.log(`Cached ${stocks.length} hot stocks with significant timeframes: ${timeframeDetails}`);
+      return true;
+    } catch (error) {
+      console.error('Error saving hot stocks cache:', error);
+      return false;
+    }
   }
 }
 

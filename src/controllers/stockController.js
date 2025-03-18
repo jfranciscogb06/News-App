@@ -210,6 +210,95 @@ class StockController {
       next(error);
     }
   }
+
+  /**
+   * Get hot stocks with analysis
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async getHotStocks(req, res, next) {
+    try {
+      // Try to get from cache first
+      const cachedHotStocks = await NewsCache.getHotStocks();
+      if (cachedHotStocks) {
+        return res.json({
+          timestamp: new Date(),
+          source: 'cache',
+          stocks: cachedHotStocks
+        });
+      }
+
+      // Find stocks with high sentiment scores from existing cache
+      const hotStocks = await NewsCache.findHotStocks();
+      
+      // If we don't have enough hot stocks, search for trending stock terms
+      if (hotStocks.length < HOT_STOCKS_LIMIT) {
+        const trendingStocks = await newsService.findTrendingStocks();
+        
+        // Analyze each new trending stock
+        const newAnalyses = await Promise.all(
+          trendingStocks
+            .filter(symbol => !hotStocks.some(hot => hot.symbol === symbol))
+            .map(async (symbol) => {
+              try {
+                const { articles, count } = await newsService.collectAndAnalyzeNews(symbol, 30);
+                const analysis = await openaiService.analyzeArticles(symbol, articles);
+                
+                const sourceCredibilityStats = this.calculateSourceCredibilityStats(analysis);
+                
+                // Save to individual stock cache
+                await NewsCache.save(symbol, analysis, {
+                  sourceCredibility: sourceCredibilityStats,
+                  articleCount: count,
+                  ttlHours: 0.5
+                });
+
+                return {
+                  symbol,
+                  analysis,
+                  sourceCredibility: sourceCredibilityStats,
+                  articleCount: count,
+                  lastUpdated: new Date()
+                };
+              } catch (error) {
+                console.error(`Error analyzing trending stock ${symbol}:`, error);
+                return null;
+              }
+            })
+        );
+
+        // Add valid new analyses to hot stocks
+        hotStocks.push(...newAnalyses.filter(analysis => 
+          analysis !== null && 
+          Object.values(analysis.analysis).some(timeframe => 
+            Math.abs(timeframe.sentiment) >= HOT_STOCK_SENTIMENT_THRESHOLD
+          )
+        ));
+        
+        // Sort and limit
+        hotStocks.sort((a, b) => {
+          const aMaxSentiment = Math.max(...Object.values(a.analysis)
+            .map(timeframe => Math.abs(timeframe.sentiment)));
+          const bMaxSentiment = Math.max(...Object.values(b.analysis)
+            .map(timeframe => Math.abs(timeframe.sentiment)));
+          return bMaxSentiment - aMaxSentiment;
+        }).slice(0, HOT_STOCKS_LIMIT);
+      }
+      
+      // Save to hot stocks cache
+      await NewsCache.saveHotStocks(hotStocks);
+
+      res.json({
+        timestamp: new Date(),
+        source: 'fresh',
+        stocks: hotStocks
+      });
+    } catch (error) {
+      console.error('Error getting hot stocks:', error);
+      next(error);
+    }
+  }
 }
 
 module.exports = new StockController(); 
