@@ -769,11 +769,8 @@ class NewsService {
     try {
       console.log(`Collecting news for ${symbol}...`);
       
-      // Get articles and preprocess them in parallel
-      const [articles, sourceValidation] = await Promise.all([
-        this.getGoogleNewsArticles(symbol),
-        sourceValidationService.getSourceValidationCache()
-      ]);
+      // Get articles
+      const articles = await this.getGoogleNewsArticles(symbol);
       
       // Pre-process articles with optimized filtering
       const preprocessedArticles = this.preprocessArticles(articles);
