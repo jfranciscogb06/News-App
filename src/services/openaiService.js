@@ -427,58 +427,61 @@ Select up to ${maxArticles} articles, prioritizing those with unique insights ac
       // Organize articles by timeframe relevance
       const timeframeArticles = this.organizeArticlesByTimeframe(articles);
       
-      const timeframeDetails = Object.entries(timeframeArticles)
-        .map(([timeframe, articles]) => `${timeframe}: ${articles.length} articles`)
-        .join(', ');
-      
-      console.log(`Organized articles by timeframe: ${timeframeDetails}`);
-      
-      // Create specific prompts for each timeframe using only the relevant articles for that timeframe
-      const timeframes = ['7days', '1month', '3months', '6months'];
-      
-      // Enrich article data for OpenAI with source credibility information
-      for (const timeframe of timeframes) {
-        const relevantArticles = timeframeArticles[timeframe];
+      // Create a single prompt for all timeframes to reduce API calls
+      const systemMessage = {
+        role: 'system',
+        content: `You are a skilled financial analyst who specializes in stock price movement forecasting. 
+        Your task is to analyze news articles about ${symbol} stock to predict its likely price movement across multiple timeframes.
         
-        // Add credibility context to each article if available
-        for (let i = 0; i < relevantArticles.length; i++) {
-          if (relevantArticles[i].credibilityScore) {
-            relevantArticles[i].credibilityContext = `Source reliability: ${relevantArticles[i].credibilityScore.rating}, 
-              Political bias: ${relevantArticles[i].biasAssessment?.politicalBias || 'unknown'}, 
-              Sensationalism: ${relevantArticles[i].biasAssessment?.sensationalism || 'unknown'}, 
-              Opinion content: ${relevantArticles[i].isOpinionContent ? 'yes' : 'no'}`;
+        IMPORTANT SOURCE CREDIBILITY GUIDELINES:
+        - Prioritize information from high-credibility sources and weigh them more heavily in your analysis
+        - Be cautious with articles marked as "questionable" or "low credibility"
+        - Be aware of political bias and sensationalism that might affect reporting
+        - Consider whether articles are opinion pieces versus factual reporting
+        - When sources conflict, favor more credible sources over less credible ones
+        
+        You will analyze relevant news articles and predict whether the stock is likely to go UP, DOWN, or SIDEWAYS for each timeframe.
+        
+        For each timeframe, provide:
+        1. A clear directional prediction (UP, DOWN, or SIDEWAYS)
+        2. Confidence level (high, medium, low)
+        3. Expected magnitude (significant, moderate, slight)
+        4. Key factors driving the prediction
+        5. Key articles supporting this prediction (2-5 most relevant articles)
+        6. Potential risks that could change the prediction
+        
+        Return your analysis as a JSON object with this structure:
+        {
+          "7days": { prediction, confidence, magnitude, key_factors, key_articles, risks },
+          "1month": { prediction, confidence, magnitude, key_factors, key_articles, risks },
+          "3months": { prediction, confidence, magnitude, key_factors, key_articles, risks },
+          "6months": { prediction, confidence, magnitude, key_factors, key_articles, risks }
+        }`
+      };
+
+      // Format articles for OpenAI
+      const formattedArticles = this.formatArticlesForAnalysis(timeframeArticles);
+      
+      // Create the OpenAI API request
+      const response = await this.openai.chat.completions.create({
+        model: "gpt-4",
+        messages: [
+          systemMessage,
+          {
+            role: "user",
+            content: `Here are the news articles about ${symbol} stock to analyze for price movement prediction across multiple timeframes:\n\n${formattedArticles}`
           }
-        }
+        ],
+        temperature: 0.3,
+        max_tokens: 4000
+      });
+
+      if (!response.choices?.[0]?.message?.content) {
+        throw new Error('Invalid response from OpenAI');
       }
 
-      // Process each timeframe separately
-      const analysis = {};
-      
-      // Create promises for all timeframes to process in parallel
-      const timeframePromises = timeframes.map(async timeframe => {
-        const relevantArticles = timeframeArticles[timeframe];
-        let timeframeAnalysis;
-        
-        if (relevantArticles.length === 0) {
-          console.log(`No articles found for timeframe: ${timeframe}, using general articles`);
-          // If no specific articles for this timeframe, use a subset of all articles
-          timeframeAnalysis = await this.analyzeSingleTimeframe(symbol, timeframe, articles.slice(0, 20));
-        } else {
-          console.log(`Analyzing ${timeframe} with ${relevantArticles.length} relevant articles`);
-          timeframeAnalysis = await this.analyzeSingleTimeframe(symbol, timeframe, relevantArticles);
-        }
-        
-        // Store the result with the timeframe as the key
-        return { timeframe, analysis: timeframeAnalysis };
-      });
-      
-      // Wait for all timeframe analyses to complete
-      const results = await Promise.all(timeframePromises);
-      
-      // Combine results into the analysis object
-      for (const result of results) {
-        analysis[result.timeframe] = result.analysis;
-      }
+      // Parse and validate the response
+      const analysis = this.cleanAndParseResponse(response.choices[0].message.content, 'multi-timeframe analysis');
       
       // Validate structure of the response
       try {
@@ -494,369 +497,40 @@ Select up to ${maxArticles} articles, prioritizing those with unique insights ac
     }
   }
   
-  // Analyze a single timeframe with relevant articles
-  async analyzeSingleTimeframe(symbol, timeframe, articles) {
-    // Convert timeframe to human-readable range
-    const timeframeDescription = {
-      '7days': 'the next 7 days',
-      '1month': 'the next month',
-      '3months': 'the next 3 months',
-      '6months': 'the next 6 months'
-    }[timeframe];
+  // New helper method to format articles for analysis
+  formatArticlesForAnalysis(timeframeArticles) {
+    const allArticles = new Set();
     
-    // Calculate specific date range for this timeframe
-    const startDate = new Date();
-    const endDate = new Date();
+    // Collect unique articles across all timeframes
+    Object.values(timeframeArticles).forEach(articles => {
+      articles.forEach(article => allArticles.add(article));
+    });
     
-    switch(timeframe) {
-      case '7days':
-        endDate.setDate(startDate.getDate() + 7);
-        break;
-      case '1month':
-        endDate.setMonth(startDate.getMonth() + 1);
-        break;
-      case '3months':
-        endDate.setMonth(startDate.getMonth() + 3);
-        break;
-      case '6months':
-        endDate.setMonth(startDate.getMonth() + 6);
-        break;
-    }
-    
-    // Format date range (e.g., "May 1 - May 7, 2023")
-    const formatOptions = { month: 'short', day: 'numeric', year: timeframe === '7days' ? undefined : 'numeric' };
-    const dateRange = `${startDate.toLocaleDateString('en-US', formatOptions)} - ${endDate.toLocaleDateString('en-US', formatOptions)}`;
-    
-    const timeframeLabel = {
-      '7days': `7-Day (${dateRange})`,
-      '1month': `1-Month (${dateRange})`,
-      '3months': `3-Month (${dateRange})`,
-      '6months': `6-Month (${dateRange})`
-    }[timeframe];
-    
-    try {
-      // Prepare the system message instructing the model on how to analyze the articles
-      const systemMessage = {
-        role: 'system',
-        content: `You are a skilled financial analyst who specializes in stock price movement forecasting. 
-        Your task is to analyze news articles about ${symbol} stock to predict its likely price movement over ${timeframeDescription} (${dateRange}).
-        
-        IMPORTANT SOURCE CREDIBILITY GUIDELINES:
-        - Prioritize information from high-credibility sources and weigh them more heavily in your analysis
-        - Be cautious with articles marked as "questionable" or "low credibility"
-        - Be aware of political bias and sensationalism that might affect reporting
-        - Consider whether articles are opinion pieces versus factual reporting
-        - When sources conflict, favor more credible sources over less credible ones
-        
-        You will analyze relevant news articles and predict whether the stock is likely to go UP, DOWN, or SIDEWAYS in ${timeframeDescription}.
-        
-        Your analysis should include:
-        1. A clear directional prediction (UP, DOWN, or SIDEWAYS)
-        2. Confidence level (high, medium, low)
-        3. Expected magnitude (significant, moderate, slight)
-        4. Key factors driving the prediction
-        5. Key articles supporting this prediction (2-5 most relevant articles)
-        6. Potential risks that could change the prediction
-        
-        For each key article you select, provide:
-        - Title
-        - Source
-        - URL
-        - Impact summary (2-3 detailed sentences on what the article reveals and why it's significant for stock movement)
-        - Confidence in this article (high/medium/low, factoring in source credibility)
-        
-        IMPORTANT: 
-        - Your prediction MUST be one of exactly three values: "UP", "DOWN", or "SIDEWAYS" (all caps).
-        - Article impact summaries should be substantive and informative, not just paraphrases of the title.
-        - Include specific facts, figures, analyst opinions, or key developments from the article in your summaries.
-        
-        Return your analysis as a JSON object with this structure:
-        {
-          "prediction": "UP|DOWN|SIDEWAYS",
-          "confidence": "high|medium|low",
-          "magnitude": "significant|moderate|slight",
-          "key_factors": ["factor1", "factor2", ...],
-          "key_articles": [
-            {
-              "title": "Article title",
-              "source": "Source name",
-              "url": "Article URL",
-              "impact_summary": "2-3 detailed sentences on what the article reveals and why it's significant",
-              "confidence": "high|medium|low"
-            },
-            ...
-          ],
-          "risks": ["risk1", "risk2", ...]
-        }`
-      };
-
-      // Sort articles by their timeframe relevance score for this specific timeframe
-      let timeframeArticles = [...articles];
-      
-      // For traceability, put an index on each article
-      timeframeArticles = timeframeArticles.map((article, idx) => ({
-        ...article,
-        index: idx + 1
-      }));
-      
-      // Format the articles for OpenAI in a more structured way
-      const formattedArticles = timeframeArticles.map(article => {
-        // Extract credibility information if available
+    // Format each unique article
+    return Array.from(allArticles)
+      .map((article, idx) => {
         const credibilityInfo = article.credibilityScore 
           ? `\nSource credibility: ${article.credibilityScore.rating} (score: ${article.credibilityScore.score}/100)`
           : '';
         
-        // Extract bias information if available
         const biasInfo = article.biasAssessment
           ? `\nPolitical bias: ${article.biasAssessment.politicalBias}, Sensationalism: ${article.biasAssessment.sensationalism}`
           : '';
         
-        // Note if it's an opinion piece
         const opinionInfo = article.isOpinionContent
           ? '\nThis appears to be an opinion piece rather than factual reporting.'
           : '';
         
         return `
-ARTICLE ${article.index}:
+ARTICLE ${idx + 1}:
 Title: ${article.title || 'No title'}
 Source: ${article.source || 'Unknown source'}${credibilityInfo}${biasInfo}${opinionInfo}
 Date: ${article.publishedAt || 'Unknown date'}
 URL: ${article.url || 'No URL'}
 Content: ${article.description || article.content || 'No content available'}
         `.trim();
-      }).join('\n\n');
-
-      // Create the OpenAI API request
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini", // or equivalent available model
-        messages: [
-          systemMessage,
-          {
-            role: "user",
-            content: `Here are the news articles about ${symbol} stock to analyze for price movement prediction over ${timeframeDescription}:\n\n${formattedArticles}\n\nBased on these articles, provide your analysis and prediction in the requested JSON format. Be sure to consider source credibility when weighing information.`
-          }
-        ],
-        temperature: 0.3,
-        max_tokens: 2000
-      });
-
-      if (!response.choices?.[0]?.message?.content) {
-        throw new Error(`Invalid response from OpenAI for timeframe ${timeframe}`);
-      }
-
-      // Parse the response and convert to legacy format
-      let result = this.cleanAndParseResponse(response.choices[0].message.content, `${timeframe} analysis`);
-      
-      // Convert the new format to the legacy format expected by the rest of the application
-      const legacyFormat = this.convertToLegacyFormat(result, timeframe);
-      
-      return legacyFormat;
-    } catch (error) {
-      console.error(`Error analyzing timeframe ${timeframe}:`, error);
-      // Return a fallback empty structure that follows the expected format
-      return {
-        sentiment: 0,
-        direction: "neutral",
-        expected_change_percent: "0%",
-        confidence_level: "low",
-        summary: `Insufficient data to analyze ${timeframe} timeframe.`,
-        price_drivers: [
-          {
-            factor: "Insufficient data",
-            impact: "neutral",
-            confidence: "low"
-          }
-        ],
-        key_articles: []
-      };
-    }
-  }
-  
-  // Helper method to convert the new format to the legacy format
-  convertToLegacyFormat(newFormat, timeframe) {
-    // If already in legacy format, return as is
-    if (newFormat.sentiment !== undefined && 
-        newFormat.direction !== undefined && 
-        newFormat.expected_change_percent !== undefined) {
-      // Still add timeframe_label and display_order if missing
-      if (!newFormat.timeframe_label) {
-        newFormat.timeframe_label = this.getTimeframeLabel(timeframe);
-      }
-      if (!newFormat.display_order) {
-        newFormat.display_order = this.getDisplayOrder(timeframe);
-      }
-      return newFormat;
-    }
-    
-    console.log(`Converting new format to legacy format for ${timeframe}`);
-    
-    // Map prediction to direction and sentiment
-    let direction = 'neutral';
-    let sentiment = 0;
-    
-    if (newFormat.prediction) {
-      const pred = newFormat.prediction.toLowerCase();
-      if (pred === 'up') {
-        direction = 'up';
-        sentiment = 5; // Positive sentiment
-      } else if (pred === 'down') {
-        direction = 'down';
-        sentiment = -5; // Negative sentiment
-      } else if (pred === 'sideways') {
-        direction = 'neutral';
-        sentiment = 0; // Neutral sentiment
-      }
-    }
-    
-    // Determine expected_change_percent from magnitude
-    let expected_change_percent = '0%';
-    if (newFormat.magnitude) {
-      if (direction === 'neutral') {
-        expected_change_percent = '-1% to 1%'; // Sideways movement
-      } else if (newFormat.magnitude === 'significant') {
-        expected_change_percent = direction === 'up' ? '>5%' : '<-5%';
-      } else if (newFormat.magnitude === 'moderate') {
-        expected_change_percent = direction === 'up' ? '2-5%' : '-2% to -5%';
-      } else {
-        expected_change_percent = direction === 'up' ? '0-2%' : '-2% to 0%';
-      }
-    }
-    
-    // Create a summary from key factors if needed
-    let summary = newFormat.summary;
-    if (!summary && newFormat.key_factors) {
-      const keyFactors = Array.isArray(newFormat.key_factors) 
-        ? newFormat.key_factors.join('. ') 
-        : 'No specific factors identified.';
-        
-      const predictionText = direction === 'up' ? 'upward' :
-                            direction === 'down' ? 'downward' : 'sideways';
-      
-      summary = `Analysis predicts ${predictionText} movement with ${newFormat.confidence || 'medium'} confidence. ${keyFactors}`;
-    }
-    
-    // Convert key_factors to price_drivers
-    const price_drivers = [];
-    if (newFormat.key_factors && Array.isArray(newFormat.key_factors)) {
-      for (const factor of newFormat.key_factors) {
-        price_drivers.push({
-          factor,
-          impact: direction === 'up' ? 'positive' : 
-                 direction === 'down' ? 'negative' : 'neutral',
-          confidence: newFormat.confidence || 'medium'
-        });
-      }
-    }
-    
-    // Also convert risks to price drivers
-    if (newFormat.risks && Array.isArray(newFormat.risks)) {
-      // Add risks as negative or neutral price drivers depending on prediction
-      for (const risk of newFormat.risks) {
-        price_drivers.push({
-          factor: risk,
-          impact: direction === 'up' ? 'negative' : 'neutral', // Risks for UP prediction are negative, otherwise neutral
-          confidence: newFormat.confidence || 'medium'
-        });
-      }
-    }
-    
-    // Ensure key_articles have the right format
-    const key_articles = newFormat.key_articles || [];
-    
-    // Get timeframe label
-    const timeframe_label = this.getTimeframeLabel(timeframe);
-    
-    // Get display order
-    const display_order = this.getDisplayOrder(timeframe);
-    
-    // Ensure each key article has the required fields
-    for (const article of key_articles) {
-      // Ensure required fields are present
-      if (!article.confidence) {
-        article.confidence = newFormat.confidence || 'medium';
-      }
-      if (!article.title) {
-        article.title = "Untitled Article";
-      }
-      if (!article.source) {
-        article.source = "Unknown Source";
-      }
-      if (!article.url) {
-        article.url = "#";
-      }
-      
-      // Ensure each article has a date, use current date if not present
-      if (!article.publishedAt) {
-        const formattedDate = new Date().toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
-        article.publishedAt = formattedDate;
-      }
-      
-      // Ensure impact_summary is present and substantive
-      if (!article.impact_summary) {
-        // Create a default detailed summary if none exists
-        const impactDirection = direction === 'up' ? 'positive' : direction === 'down' ? 'negative' : 'neutral';
-        article.impact_summary = `This article provides ${impactDirection} insights regarding ${symbol}'s performance. It includes key information that contributes to the overall ${newFormat.confidence || 'medium'} confidence prediction for ${timeframe_label}.`;
-      }
-      
-      // Remove sourceCredibility fields if they're all unknown
-      if (article.sourceCredibility) {
-        if (article.sourceCredibility.reliability === 'unknown' && 
-            article.sourceCredibility.bias === 'unknown' && 
-            article.sourceCredibility.factualReporting === 'unknown') {
-          delete article.sourceCredibility;
-        }
-      }
-      
-      // Add timeframe information to each article
-      if (!article.timeframe_label) {
-        article.timeframe_label = timeframe_label;
-      }
-      
-      if (!article.for_timeframe) {
-        article.for_timeframe = timeframe;
-      }
-    }
-    
-    return {
-      sentiment,
-      direction,
-      expected_change_percent,
-      confidence_level: newFormat.confidence || 'medium',
-      summary,
-      price_drivers,
-      key_articles,
-      timeframe_label,
-      display_order
-    };
-  }
-  
-  // Helper to get standardized timeframe label
-  getTimeframeLabel(timeframe) {
-    const labels = {
-      '7days': 'Next 7 Days',
-      '1month': 'Next Month',
-      '3months': 'Next 3 Months',
-      '6months': 'Next 6 Months'
-    };
-    
-    return labels[timeframe] || `Next ${timeframe}`;
-  }
-
-  // Helper to get display order
-  getDisplayOrder(timeframe) {
-    const orders = {
-      '7days': 1,
-      '1month': 2,
-      '3months': 3,
-      '6months': 4
-    };
-    
-    return orders[timeframe] || 0;
+      })
+      .join('\n\n');
   }
   
   // Organize articles by timeframe, but with stricter timeframe-specific filtering
