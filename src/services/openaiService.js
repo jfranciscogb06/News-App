@@ -830,14 +830,24 @@ Content: ${article.description || article.content || 'No content available'}
     // Create a summary from key factors if needed
     let summary = newFormat.summary;
     if (!summary && newFormat.key_factors) {
-      const keyFactors = Array.isArray(newFormat.key_factors) 
-        ? newFormat.key_factors.join('. ') 
-        : 'No specific factors identified.';
-        
-      const predictionText = direction === 'up' ? 'upward' :
-                            direction === 'down' ? 'downward' : 'sideways';
-      
-      summary = `Analysis predicts ${predictionText} movement with ${newFormat.confidence || 'medium'} confidence. ${keyFactors}`;
+      // Filter out factors that just describe the prediction
+      const specificFactors = newFormat.key_factors.filter(factor => {
+        const lowerFactor = factor.toLowerCase();
+        return !lowerFactor.includes('upward') && 
+               !lowerFactor.includes('downward') && 
+               !lowerFactor.includes('sideways') &&
+               !lowerFactor.includes('movement') &&
+               !lowerFactor.includes('prediction') &&
+               !lowerFactor.includes('confidence') &&
+               !lowerFactor.includes('percentage') &&
+               !lowerFactor.includes('change');
+      });
+
+      if (specificFactors.length > 0) {
+        summary = specificFactors.join('. ');
+      } else {
+        summary = 'No specific developments identified in the analyzed articles.';
+      }
     }
     
     // Convert key_factors to price_drivers
