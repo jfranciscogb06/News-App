@@ -769,7 +769,7 @@ class NewsService {
     try {
       console.log(`Collecting news for ${symbol}...`);
       
-      // Get articles
+      // Get articles and preprocess them in parallel
       const articles = await this.getGoogleNewsArticles(symbol);
       
       // Pre-process articles with optimized filtering
