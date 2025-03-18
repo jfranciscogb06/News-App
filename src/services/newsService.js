@@ -828,10 +828,26 @@ class NewsService {
     ];
 
     const outcomeTimingTerms = {
-      immediate: ['today', 'tomorrow', 'this week', 'next week', 'immediately', 'shortly', 'soon'],
-      nearTerm: ['next month', 'coming weeks', 'in the coming days', 'in the near future', 'short-term'],
-      midTerm: ['next quarter', 'upcoming quarter', 'in the coming months', 'mid-term', 'medium-term'],
-      longTerm: ['next year', 'long-term', 'longer-term', 'strategic', 'roadmap', 'pipeline']
+      immediate: [
+        'today', 'tomorrow', 'this week', 'next week', 'immediately', 'shortly', 'soon',
+        'imminent', 'within days', 'urgent', 'breaking', 'just announced',
+        'effective immediately', 'starting now', 'instant effect'
+      ],
+      nearTerm: [
+        'next month', 'coming weeks', 'in the coming days', 'in the near future', 'short-term',
+        'within weeks', '30 days', 'month ahead', 'near horizon', 'upcoming month',
+        'weeks away', 'approaching deadline', 'near-term impact'
+      ],
+      midTerm: [
+        'next quarter', 'upcoming quarter', 'in the coming months', 'mid-term', 'medium-term',
+        'quarterly outlook', 'Q1 target', 'Q2 target', 'Q3 target', 'Q4 target',
+        '90-day plan', 'three months', 'quarter-end goal', 'seasonal impact'
+      ],
+      longTerm: [
+        'next year', 'long-term', 'longer-term', 'strategic', 'roadmap', 'pipeline',
+        'annual target', 'fiscal year', 'multi-year', 'future vision', '12-month outlook',
+        'long-range plan', 'strategic initiative', 'extended timeline', 'year-end goal'
+      ]
     };
 
     return articles.map(article => {
@@ -848,23 +864,57 @@ class NewsService {
         longTerm: outcomeTimingTerms.longTerm.some(term => textContent.includes(term))
       };
 
-      // Calculate timeframe relevance based on outcome timing
-      const timeframeRelevance = {
-        '7days': outcomeTiming.immediate ? 5 : (outcomeTiming.nearTerm ? 3 : 0),
-        '1month': outcomeTiming.nearTerm ? 5 : (outcomeTiming.immediate ? 3 : 0),
-        '3months': outcomeTiming.midTerm ? 5 : (outcomeTiming.nearTerm ? 3 : 0),
-        '6months': outcomeTiming.longTerm ? 5 : (outcomeTiming.midTerm ? 3 : 0)
+      // Calculate timing confidence based on specificity and multiple indicators
+      const timingConfidence = {
+        immediate: this.calculateTimingConfidence(textContent, outcomeTimingTerms.immediate),
+        nearTerm: this.calculateTimingConfidence(textContent, outcomeTimingTerms.nearTerm),
+        midTerm: this.calculateTimingConfidence(textContent, outcomeTimingTerms.midTerm),
+        longTerm: this.calculateTimingConfidence(textContent, outcomeTimingTerms.longTerm)
       };
 
-      // Add future impact score based on content
-      const futureImpactScore = hasFutureTerms ? 2 : 0;
+      // Determine primary outcome timing (the one with highest confidence)
+      const primaryTiming = Object.entries(timingConfidence)
+        .reduce((a, b) => a[1] > b[1] ? a : b)[0];
+
+      // Calculate timeframe relevance based on outcome timing and confidence
+      const timeframeRelevance = {
+        '7days': outcomeTiming.immediate ? 5 * timingConfidence.immediate : 
+                (outcomeTiming.nearTerm ? 3 * timingConfidence.nearTerm : 0),
+        '1month': outcomeTiming.nearTerm ? 5 * timingConfidence.nearTerm : 
+                 (outcomeTiming.immediate ? 3 * timingConfidence.immediate : 0),
+        '3months': outcomeTiming.midTerm ? 5 * timingConfidence.midTerm : 
+                  (outcomeTiming.nearTerm ? 3 * timingConfidence.nearTerm : 0),
+        '6months': outcomeTiming.longTerm ? 5 * timingConfidence.longTerm : 
+                  (outcomeTiming.midTerm ? 3 * timingConfidence.midTerm : 0)
+      };
+
+      // Add future impact score based on content and timing confidence
+      const futureImpactScore = hasFutureTerms ? 
+        2 * Math.max(timingConfidence.nearTerm, timingConfidence.midTerm, timingConfidence.longTerm) : 0;
       
-      // Add outcome timing information
+      // Add outcome timing information with confidence levels
       const outcomeTimingInfo = {
-        immediate: outcomeTiming.immediate,
-        nearTerm: outcomeTiming.nearTerm,
-        midTerm: outcomeTiming.midTerm,
-        longTerm: outcomeTiming.longTerm
+        immediate: {
+          hasIndicators: outcomeTiming.immediate,
+          confidence: timingConfidence.immediate,
+          terms: outcomeTimingTerms.immediate.filter(term => textContent.includes(term))
+        },
+        nearTerm: {
+          hasIndicators: outcomeTiming.nearTerm,
+          confidence: timingConfidence.nearTerm,
+          terms: outcomeTimingTerms.nearTerm.filter(term => textContent.includes(term))
+        },
+        midTerm: {
+          hasIndicators: outcomeTiming.midTerm,
+          confidence: timingConfidence.midTerm,
+          terms: outcomeTimingTerms.midTerm.filter(term => textContent.includes(term))
+        },
+        longTerm: {
+          hasIndicators: outcomeTiming.longTerm,
+          confidence: timingConfidence.longTerm,
+          terms: outcomeTimingTerms.longTerm.filter(term => textContent.includes(term))
+        },
+        primaryTiming: primaryTiming
       };
 
       return {
@@ -877,6 +927,34 @@ class NewsService {
         snippet: article.title + '. ' + article.description
       };
     });
+  }
+
+  // Helper method to calculate timing confidence based on number and specificity of indicators
+  calculateTimingConfidence(text, timingTerms) {
+    const matchedTerms = timingTerms.filter(term => text.includes(term));
+    
+    // No matches = no confidence
+    if (matchedTerms.length === 0) return 0;
+    
+    // Base confidence on number of matching terms
+    let confidence = Math.min(1, matchedTerms.length / 3); // Cap at 1.0
+    
+    // Boost confidence for specific date mentions
+    if (text.match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/) || // MM/DD/YYYY
+        text.match(/\b\d{4}-\d{2}-\d{2}\b/) ||       // YYYY-MM-DD
+        text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\b/i)) { // Month DD
+      confidence = Math.min(1, confidence + 0.3);
+    }
+    
+    // Boost confidence for explicit timing language
+    if (text.includes('scheduled') || 
+        text.includes('confirmed') || 
+        text.includes('announced') ||
+        text.includes('planned')) {
+      confidence = Math.min(1, confidence + 0.2);
+    }
+    
+    return confidence;
   }
 
   // Assess which timeframes an article is most relevant for
