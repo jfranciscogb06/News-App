@@ -366,19 +366,17 @@ Consider these factors:
 5. Investor interest
 6. Recent market activity
 
-Return a JSON object with a 'stocks' array containing stock symbols.
-Format example:
+IMPORTANT: You must respond with ONLY a JSON object in the following format, with no additional text or explanation:
 {
   "stocks": ["AAPL", "MSFT", "GOOGL"]
 }
 
-Do not include any explanations or additional text.
-Ensure all symbols are valid and currently trading.`
+The response must be valid JSON and contain only uppercase stock symbols.
+Each symbol must be a valid trading symbol (1-5 letters).`
           }
         ],
         temperature: 0.2,
-        max_tokens: 1000,
-        response_format: { type: "json_object" }
+        max_tokens: 1000
       });
 
       if (!response?.choices?.[0]?.message?.content) {
@@ -390,7 +388,7 @@ Ensure all symbols are valid and currently trading.`
       
       try {
         // If the content is already a string (which it should be), parse it
-        stocks = typeof content === 'string' ? JSON.parse(content) : content;
+        stocks = typeof content === 'string' ? JSON.parse(content.trim()) : content;
         
         // The response should now be an object with a stocks array
         if (stocks.stocks && Array.isArray(stocks.stocks)) {
