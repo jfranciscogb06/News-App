@@ -868,26 +868,16 @@ Content: ${article.description || article.content || 'No content available'}
       '3months': [],
       '6months': []
     };
-    
-    // Calculate end dates for each timeframe for reference
-    const now = new Date();
-    const endDates = {
-      '7days': new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
-      '1month': new Date(now.getFullYear(), now.getMonth() + 1, now.getDate()),
-      '3months': new Date(now.getFullYear(), now.getMonth() + 3, now.getDate()),
-      '6months': new Date(now.getFullYear(), now.getMonth() + 6, now.getDate())
-    };
-    
-    // First pass: Use explicit timeframe_relevance scores if available and organize articles
-    // This ensures the most relevant articles are placed in each timeframe
+
+    // First pass: Use outcome timing and timeframe relevance to organize articles
     articles.forEach(article => {
-      // Check for explicit timeframe scores
-      if (article.timeframe_relevance) {
+      // Check for explicit timeframe relevance scores
+      if (article.timeframeRelevance) {
         // Get all timeframes with at least minimal relevance (score >= 3)
-        const relevantTimeframes = Object.entries(article.timeframe_relevance)
+        const relevantTimeframes = Object.entries(article.timeframeRelevance)
           .filter(([_, score]) => score >= 3)
           .sort(([_, scoreA], [__, scoreB]) => scoreB - scoreA); // Sort by score (highest first)
-        
+
         if (relevantTimeframes.length > 0) {
           // Add the article to each relevant timeframe
           relevantTimeframes.forEach(([timeframe, score]) => {
@@ -903,143 +893,66 @@ Content: ${article.description || article.content || 'No content available'}
           return; // Skip the rest of processing for this article since we've placed it
         }
       }
-      
-      // If no explicit scores or none above threshold, check content for timeframe indicators
-      const content = (article.title + ' ' + (article.description || '')).toLowerCase();
-      
-      // Check for explicit timeframe mentions in content
-      const timeframeKeywords = {
-        '7days': ['next week', 'coming days', 'this week', '7 day', 'seven day', 'short term', 'imminent'],
-        '1month': ['next month', 'coming month', '30 day', 'thirty day', 'monthly', 'short-term'],
-        '3months': ['next quarter', 'upcoming quarter', 'quarterly', 'q1', 'q2', 'q3', 'q4', 'mid-term', 'three month'],
-        '6months': ['half year', 'next 6 month', 'next six month', 'long-term', 'longer-term']
-      };
-      
-      let assignedToTimeframe = false;
-      
-      for (const [timeframe, keywords] of Object.entries(timeframeKeywords)) {
-        if (keywords.some(keyword => content.includes(keyword))) {
-          // If the article with the exact same title is already in this timeframe, skip it
-          if (!result[timeframe].some(a => a.title === article.title)) {
-            // Assign a moderate relevance score for keyword matches
-            const articleCopy = { ...article, _relevanceScore: 5 };
-            result[timeframe].push(articleCopy);
-            assignedToTimeframe = true;
-          }
+
+      // If no explicit scores or none above threshold, check outcome timing
+      if (article.outcomeTimingInfo) {
+        const timing = article.outcomeTimingInfo;
+        
+        // Assign articles based on their outcome timing
+        if (timing.immediate) {
+          result['7days'].push({ ...article, _relevanceScore: 5 });
+          result['1month'].push({ ...article, _relevanceScore: 3 });
+        } else if (timing.nearTerm) {
+          result['1month'].push({ ...article, _relevanceScore: 5 });
+          result['3months'].push({ ...article, _relevanceScore: 3 });
+        } else if (timing.midTerm) {
+          result['3months'].push({ ...article, _relevanceScore: 5 });
+          result['6months'].push({ ...article, _relevanceScore: 3 });
+        } else if (timing.longTerm) {
+          result['6months'].push({ ...article, _relevanceScore: 5 });
         }
+        return;
       }
-      
-      // If not assigned based on keywords, use publication date as fallback
-      if (!assignedToTimeframe && article.publishedAt) {
-        try {
-          const publishDate = new Date(article.publishedAt);
-          
-          // Calculate article age in days
-          const ageInDays = (now - publishDate) / (24 * 60 * 60 * 1000);
-          
-          // Assign to timeframes based on recency, with decreasing relevance scores
-          if (ageInDays <= 7) {
-            // Very recent articles (<=7 days) are relevant for all timeframes, but with different weights
-            result['7days'].push({ ...article, _relevanceScore: 8 });
-            result['1month'].push({ ...article, _relevanceScore: 7 });
-            result['3months'].push({ ...article, _relevanceScore: 6 });
-            result['6months'].push({ ...article, _relevanceScore: 5 });
-          } else if (ageInDays <= 30) {
-            // Recent articles (8-30 days) are relevant for 1+ month timeframes
-            result['1month'].push({ ...article, _relevanceScore: 6 });
-            result['3months'].push({ ...article, _relevanceScore: 5 });
-            result['6months'].push({ ...article, _relevanceScore: 4 });
-          } else if (ageInDays <= 90) {
-            // Older articles (31-90 days) are less relevant but still useful for 3+ month timeframes
-            result['3months'].push({ ...article, _relevanceScore: 4 });
-            result['6months'].push({ ...article, _relevanceScore: 3 });
-          } else if (ageInDays <= 180) {
-            // Much older articles (91-180 days) only relevant for 6-month timeframe
-            result['6months'].push({ ...article, _relevanceScore: 2 });
-          }
-          // Articles older than 180 days not considered relevant for any timeframe
-        } catch (error) {
-          console.warn(`Could not parse publishedAt date for article: ${article.title}`);
-          // For articles without valid dates, assign to all timeframes with low relevance
-          Object.keys(result).forEach(timeframe => {
-            result[timeframe].push({ ...article, _relevanceScore: 1 });
-          });
-        }
-      } else if (!assignedToTimeframe) {
-        // Articles without dates or keywords get assigned to all timeframes with lowest relevance
+
+      // If no timing information is available, check for future impact
+      if (article.futureImpactScore > 0) {
+        // Articles with future impact but no specific timing get assigned to all timeframes
+        // with decreasing relevance scores
+        result['7days'].push({ ...article, _relevanceScore: 3 });
+        result['1month'].push({ ...article, _relevanceScore: 3 });
+        result['3months'].push({ ...article, _relevanceScore: 2 });
+        result['6months'].push({ ...article, _relevanceScore: 2 });
+      } else {
+        // Articles without any timing or future impact information get lowest relevance
         Object.keys(result).forEach(timeframe => {
           result[timeframe].push({ ...article, _relevanceScore: 1 });
         });
       }
     });
-    
+
     // Second pass: Ensure each timeframe has a minimum number of articles
     // and sort articles by relevance within each timeframe
     const minArticlesPerTimeframe = 5;
     const timeframes = Object.keys(result);
-    
+
     // Sort all timeframes by relevance score
     timeframes.forEach(timeframe => {
       result[timeframe].sort((a, b) => (b._relevanceScore || 0) - (a._relevanceScore || 0));
-      
+
       // Remove duplicates based on title
       const uniqueArticles = [];
       const titles = new Set();
-      
+
       for (const article of result[timeframe]) {
         if (!titles.has(article.title)) {
           titles.add(article.title);
           uniqueArticles.push(article);
         }
       }
-      
+
       result[timeframe] = uniqueArticles;
     });
-    
-    // Ensure minimum article count for each timeframe by borrowing from others
-    for (let i = 0; i < timeframes.length; i++) {
-      const currentTimeframe = timeframes[i];
-      
-      if (result[currentTimeframe].length < minArticlesPerTimeframe) {
-        // Try to borrow articles from other timeframes
-        const neededArticles = minArticlesPerTimeframe - result[currentTimeframe].length;
-        const articlesToAdd = [];
-        
-        // First try to borrow from closest timeframes (e.g., 7days borrows from 1month first)
-        for (let j = 1; j < timeframes.length; j++) {
-          const borrowFromIndex = (i + j) % timeframes.length;
-          const borrowFromTimeframe = timeframes[borrowFromIndex];
-          
-          // Get articles from other timeframe that aren't already in current timeframe
-          const borrowableArticles = result[borrowFromTimeframe].filter(
-            article => !result[currentTimeframe].some(a => a.title === article.title)
-          );
-          
-          // Sort by relevance and take what we need
-          borrowableArticles.sort((a, b) => (b._relevanceScore || 0) - (a._relevanceScore || 0));
-          
-          const borrowed = borrowableArticles.slice(0, neededArticles - articlesToAdd.length);
-          articlesToAdd.push(...borrowed);
-          
-          if (articlesToAdd.length >= neededArticles) break;
-        }
-        
-        // Add the borrowed articles to the current timeframe
-        result[currentTimeframe].push(...articlesToAdd);
-      }
-    }
-    
-    // Limit the number of articles per timeframe to a reasonable number
-    const maxArticlesPerTimeframe = 20;
-    timeframes.forEach(timeframe => {
-      result[timeframe] = result[timeframe].slice(0, maxArticlesPerTimeframe);
-      
-      // Clean up the internal _relevanceScore property
-      result[timeframe].forEach(article => {
-        delete article._relevanceScore;
-      });
-    });
-    
+
     return result;
   }
 }

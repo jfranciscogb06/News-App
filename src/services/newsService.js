@@ -820,60 +820,59 @@ class NewsService {
   
   // Add metadata to articles for better filtering and analysis
   preprocessArticles(articles) {
-    // Define future-oriented terms
+    // Define future-oriented terms and outcome timing indicators
     const futureTerms = [
       'will', 'going to', 'expect', 'anticipate', 'forecast', 'guidance', 
       'outlook', 'target', 'prediction', 'projected', 'future', 'upcoming',
       'next quarter', 'next year', 'planning', 'roadmap', 'pipeline'
     ];
-    
-    // Get current date for recency check
-    const now = new Date();
-    const threeDaysAgo = new Date(now);
-    threeDaysAgo.setDate(now.getDate() - 3);
-    
-    // Additional recency thresholds for timeframe filtering
-    const oneWeekAgo = new Date(now);
-    oneWeekAgo.setDate(now.getDate() - 7);
-    
-    const oneMonthAgo = new Date(now);
-    oneMonthAgo.setMonth(now.getMonth() - 1);
-    
-    const threeMonthsAgo = new Date(now);
-    threeMonthsAgo.setMonth(now.getMonth() - 3);
-    
+
+    const outcomeTimingTerms = {
+      immediate: ['today', 'tomorrow', 'this week', 'next week', 'immediately', 'shortly', 'soon'],
+      nearTerm: ['next month', 'coming weeks', 'in the coming days', 'in the near future', 'short-term'],
+      midTerm: ['next quarter', 'upcoming quarter', 'in the coming months', 'mid-term', 'medium-term'],
+      longTerm: ['next year', 'long-term', 'longer-term', 'strategic', 'roadmap', 'pipeline']
+    };
+
     return articles.map(article => {
-      // Get publication date from various fields
-      let pubDate;
-      if (article.publishedDate && article.publishedDate instanceof Date) {
-        pubDate = article.publishedDate;
-      } else if (article.pubDate) {
-        pubDate = new Date(article.pubDate);
-        if (isNaN(pubDate.getTime())) pubDate = new Date(); // fallback to current date
-      } else {
-        pubDate = new Date(); // default to current date if no date found
-      }
-      
-      // Check if article is recent (published within last 3 days)
-      const isRecent = pubDate > threeDaysAgo;
-      
-      // Calculate recency score for different timeframes
-      const timeframeRecency = {
-        '7days': pubDate > oneWeekAgo ? 5 : 0, // Strong boost for very recent articles
-        '1month': pubDate > oneMonthAgo ? 3 : 0,
-        '3months': pubDate > threeMonthsAgo ? 2 : 0,
-        '6months': 1 // All articles within the 1-year filter get at least some relevance
-      };
-      
-      // Check if article contains future-oriented terms
       const textContent = (article.title + ' ' + article.description).toLowerCase();
+      
+      // Check for future-oriented terms
       const hasFutureTerms = futureTerms.some(term => textContent.includes(term));
       
+      // Determine outcome timing based on content
+      const outcomeTiming = {
+        immediate: outcomeTimingTerms.immediate.some(term => textContent.includes(term)),
+        nearTerm: outcomeTimingTerms.nearTerm.some(term => textContent.includes(term)),
+        midTerm: outcomeTimingTerms.midTerm.some(term => textContent.includes(term)),
+        longTerm: outcomeTimingTerms.longTerm.some(term => textContent.includes(term))
+      };
+
+      // Calculate timeframe relevance based on outcome timing
+      const timeframeRelevance = {
+        '7days': outcomeTiming.immediate ? 5 : (outcomeTiming.nearTerm ? 3 : 0),
+        '1month': outcomeTiming.nearTerm ? 5 : (outcomeTiming.immediate ? 3 : 0),
+        '3months': outcomeTiming.midTerm ? 5 : (outcomeTiming.nearTerm ? 3 : 0),
+        '6months': outcomeTiming.longTerm ? 5 : (outcomeTiming.midTerm ? 3 : 0)
+      };
+
+      // Add future impact score based on content
+      const futureImpactScore = hasFutureTerms ? 2 : 0;
+      
+      // Add outcome timing information
+      const outcomeTimingInfo = {
+        immediate: outcomeTiming.immediate,
+        nearTerm: outcomeTiming.nearTerm,
+        midTerm: outcomeTiming.midTerm,
+        longTerm: outcomeTiming.longTerm
+      };
+
       return {
         ...article,
-        isRecent,
         hasFutureTerms,
-        timeframeRecency, // Add recency scores for each timeframe
+        outcomeTimingInfo,
+        timeframeRelevance,
+        futureImpactScore,
         // Add a text snippet for OpenAI analysis
         snippet: article.title + '. ' + article.description
       };
