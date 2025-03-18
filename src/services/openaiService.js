@@ -146,9 +146,58 @@ class OpenAIService {
         throw new Error(`Missing data for timeframe: ${timeframe}`);
       }
       
+      // Handle potential compatibility issues - map the new format to old format if needed
       const timeframeData = data[timeframe];
       
-      // Validate the basic structure
+      // If the response is using the new format (prediction, confidence, magnitude, key_factors, etc.)
+      if (timeframeData.prediction && !timeframeData.direction) {
+        console.log(`Converting new format to compatible format for ${timeframe}`);
+        
+        // Convert prediction to direction
+        if (timeframeData.prediction.toLowerCase() === 'up') {
+          timeframeData.direction = 'up';
+          timeframeData.sentiment = 5; // Positive sentiment
+        } else if (timeframeData.prediction.toLowerCase() === 'down') {
+          timeframeData.direction = 'down';
+          timeframeData.sentiment = -5; // Negative sentiment
+        } else {
+          timeframeData.direction = 'neutral';
+          timeframeData.sentiment = 0; // Neutral sentiment
+        }
+        
+        // Map confidence to confidence_level
+        timeframeData.confidence_level = timeframeData.confidence || 'medium';
+        
+        // Create expected_change_percent from magnitude
+        if (timeframeData.magnitude === 'significant') {
+          timeframeData.expected_change_percent = timeframeData.direction === 'up' ? '>5%' : '<-5%';
+        } else if (timeframeData.magnitude === 'moderate') {
+          timeframeData.expected_change_percent = timeframeData.direction === 'up' ? '2-5%' : '-2% to -5%';
+        } else {
+          timeframeData.expected_change_percent = timeframeData.direction === 'up' ? '0-2%' : '-2% to 0%';
+        }
+        
+        // Create summary if missing
+        if (!timeframeData.summary) {
+          const keyFactors = Array.isArray(timeframeData.key_factors) 
+            ? timeframeData.key_factors.join('. ') 
+            : 'No specific factors identified.';
+            
+          timeframeData.summary = `Analysis predicts ${timeframeData.prediction} movement with ${timeframeData.confidence} confidence. ${keyFactors}`;
+        }
+        
+        // Convert key_factors to price_drivers if needed
+        if (timeframeData.key_factors && !timeframeData.price_drivers) {
+          timeframeData.price_drivers = timeframeData.key_factors.map(factor => ({
+            factor,
+            impact: timeframeData.direction === 'up' ? 'positive' : 
+                   timeframeData.direction === 'down' ? 'negative' : 'neutral',
+            confidence: timeframeData.confidence || 'medium'
+          }));
+        }
+      }
+      
+      // Now validate that the necessary fields exist in the compatible format
       if (typeof timeframeData.sentiment !== 'number' ||
           typeof timeframeData.summary !== 'string' ||
           !Array.isArray(timeframeData.price_drivers) ||
@@ -170,52 +219,35 @@ class OpenAIService {
         }
       }
       
-      // Validate key_articles structure with more lenient checks
+      // Validate key_articles structure
       for (const article of timeframeData.key_articles) {
-        // Check required fields with default values
-        article.title = article.title || 'Untitled Article';
-        article.source = article.source || 'Unknown Source';
-        article.url = article.url || '#';
-        article.confidence = article.confidence || 'medium';
-        
-        // Validate the confidence level is valid
-        if (!['high', 'medium', 'low'].includes(article.confidence)) {
-          article.confidence = 'medium';
+        if (!article.title || 
+            !article.url || 
+            !article.source || 
+            !article.confidence || 
+            !['high', 'medium', 'low'].includes(article.confidence)) {
+          throw new Error(`Invalid article structure for timeframe: ${timeframe}`);
         }
         
-        // Ensure impact_summary exists
-        if (!article.impact_summary) {
-          article.impact_summary = 'No impact summary provided';
+        // Check for the impact_summary field - it's optional but should be a string if present
+        if (article.impact_summary && typeof article.impact_summary !== 'string') {
+          throw new Error(`Invalid impact_summary in article for timeframe: ${timeframe}`);
         }
         
-        // Add timeframe information if missing
-        if (!article.timeframe_label) {
-          article.timeframe_label = this.getTimeframeLabel(timeframe);
+        // Check for the publishedAt field - it's optional but should be a string if present
+        if (article.publishedAt && typeof article.publishedAt !== 'string') {
+          throw new Error(`Invalid publishedAt in article for timeframe: ${timeframe}`);
         }
         
-        if (!article.for_timeframe) {
-          article.for_timeframe = timeframe;
+        // Check for the timeframe_label field - it's optional but should be a string if present
+        if (article.timeframe_label && typeof article.timeframe_label !== 'string') {
+          throw new Error(`Invalid timeframe_label in article for timeframe: ${timeframe}`);
         }
         
-        // Add publishedAt if missing
-        if (!article.publishedAt) {
-          article.publishedAt = new Date().toLocaleDateString('en-US', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
-          });
+        // Check for the for_timeframe field - it's optional but should be a string if present
+        if (article.for_timeframe && typeof article.for_timeframe !== 'string') {
+          throw new Error(`Invalid for_timeframe in article for timeframe: ${timeframe}`);
         }
-      }
-      
-      // Add display order if missing
-      if (!timeframeData.display_order) {
-        timeframeData.display_order = this.getDisplayOrder(timeframe);
-      }
-      
-      // Add timeframe label if missing
-      if (!timeframeData.timeframe_label) {
-        timeframeData.timeframe_label = this.getTimeframeLabel(timeframe);
       }
     }
     
@@ -509,16 +541,6 @@ Select up to ${maxArticles} articles, prioritizing those with unique insights ac
         content: `You are a skilled financial analyst who specializes in stock price movement forecasting. 
         Your task is to analyze news articles about ${symbol} stock to predict its likely price movement over ${timeframeDescription} (${dateRange}).
         
-        IMPORTANT OUTCOME TIMING GUIDELINES:
-        - Focus on WHEN the events/outcomes mentioned in articles will occur, not when the articles were published
-        - Prioritize articles discussing outcomes that will happen within ${timeframeDescription}
-        - Pay special attention to:
-          * Immediate impacts (happening now or within days)
-          * Near-term developments (within weeks)
-          * Mid-term changes (next quarter)
-          * Long-term strategic moves (beyond next quarter)
-        - Consider the timing confidence of each predicted outcome
-        
         IMPORTANT SOURCE CREDIBILITY GUIDELINES:
         - Prioritize information from high-credibility sources and weigh them more heavily in your analysis
         - Be cautious with articles marked as "questionable" or "low credibility"
@@ -532,56 +554,39 @@ Select up to ${maxArticles} articles, prioritizing those with unique insights ac
         1. A clear directional prediction (UP, DOWN, or SIDEWAYS)
         2. Confidence level (high, medium, low)
         3. Expected magnitude (significant, moderate, slight)
-        4. Key factors driving the prediction, with timing of expected impacts
+        4. Key factors driving the prediction
         5. Key articles supporting this prediction (2-5 most relevant articles)
-        6. Potential risks that could change the prediction, with timing considerations
+        6. Potential risks that could change the prediction
         
         For each key article you select, provide:
         - Title
         - Source
         - URL
-        - Impact summary (2-3 detailed sentences on what the article reveals, WHEN the impact will occur, and why it's significant for stock movement)
-        - Timing confidence (when the described outcomes/impacts will occur)
-        - Source confidence (factoring in source credibility)
+        - Impact summary (2-3 detailed sentences on what the article reveals and why it's significant for stock movement)
+        - Confidence in this article (high/medium/low, factoring in source credibility)
         
         IMPORTANT: 
         - Your prediction MUST be one of exactly three values: "UP", "DOWN", or "SIDEWAYS" (all caps).
-        - Article impact summaries should focus on WHEN the described outcomes will occur.
+        - Article impact summaries should be substantive and informative, not just paraphrases of the title.
         - Include specific facts, figures, analyst opinions, or key developments from the article in your summaries.
-        - Clearly distinguish between immediate impacts and future developments.
         
         Return your analysis as a JSON object with this structure:
         {
           "prediction": "UP|DOWN|SIDEWAYS",
           "confidence": "high|medium|low",
           "magnitude": "significant|moderate|slight",
-          "key_factors": [
-            {
-              "factor": "Description of the factor",
-              "timing": "When this factor's impact will occur",
-              "timing_confidence": "high|medium|low"
-            },
-            ...
-          ],
+          "key_factors": ["factor1", "factor2", ...],
           "key_articles": [
             {
               "title": "Article title",
               "source": "Source name",
               "url": "Article URL",
-              "impact_summary": "2-3 detailed sentences on what the article reveals, WHEN the impact will occur, and why it's significant",
-              "timing_confidence": "high|medium|low",
-              "source_confidence": "high|medium|low"
+              "impact_summary": "2-3 detailed sentences on what the article reveals and why it's significant",
+              "confidence": "high|medium|low"
             },
             ...
           ],
-          "risks": [
-            {
-              "risk": "Description of the risk",
-              "potential_timing": "When this risk might materialize",
-              "timing_confidence": "high|medium|low"
-            },
-            ...
-          ]
+          "risks": ["risk1", "risk2", ...]
         }`
       };
 
@@ -669,70 +674,165 @@ Content: ${article.description || article.content || 'No content available'}
   
   // Helper method to convert the new format to the legacy format
   convertToLegacyFormat(newFormat, timeframe) {
-    // Map the new prediction format to legacy sentiment values
-    const sentimentMap = {
-      'UP': 1,
-      'DOWN': -1,
-      'SIDEWAYS': 0
-    };
-
-    // Map the new magnitude format to legacy expected change values
-    const magnitudeMap = {
-      'significant': '5-10%',
-      'moderate': '2-5%',
-      'slight': '0-2%'
-    };
-
-    // Convert key factors to legacy price drivers format
-    const priceDrivers = newFormat.key_factors.map(factor => ({
-      factor: `${factor.factor} (Expected timing: ${factor.timing})`,
-      impact: factor.factor.toLowerCase().includes('negative') ? 'negative' : 'positive',
-      confidence: factor.timing_confidence || 'medium',
-      timing: factor.timing
-    }));
-
-    // Convert key articles to include timing information and ensure all required fields
-    const keyArticles = newFormat.key_articles.map(article => ({
-      title: article.title || 'Untitled Article',
-      source: article.source || 'Unknown Source',
-      url: article.url || '#',
-      impact_summary: article.impact_summary || 'No impact summary provided',
-      confidence: article.source_confidence || 'medium', // Legacy format expects 'confidence'
-      timing_confidence: article.timing_confidence || 'medium',
-      source_confidence: article.source_confidence || 'medium',
-      publishedAt: new Date().toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      }),
-      timeframe_label: this.getTimeframeLabel(timeframe),
-      for_timeframe: timeframe
-    }));
-
-    // Convert risks to include timing information
-    const risks = newFormat.risks.map(risk => ({
-      risk: risk.risk,
-      potential_timing: risk.potential_timing,
-      timing_confidence: risk.timing_confidence
-    }));
-
-    // Create the legacy format object
-    const legacyFormat = {
-      sentiment: sentimentMap[newFormat.prediction] || 0,
-      direction: newFormat.prediction.toLowerCase(),
-      expected_change_percent: magnitudeMap[newFormat.magnitude] || '0-2%',
+    // If already in legacy format, return as is
+    if (newFormat.sentiment !== undefined && 
+        newFormat.direction !== undefined && 
+        newFormat.expected_change_percent !== undefined) {
+      // Still add timeframe_label and display_order if missing
+      if (!newFormat.timeframe_label) {
+        newFormat.timeframe_label = this.getTimeframeLabel(timeframe);
+      }
+      if (!newFormat.display_order) {
+        newFormat.display_order = this.getDisplayOrder(timeframe);
+      }
+      return newFormat;
+    }
+    
+    console.log(`Converting new format to legacy format for ${timeframe}`);
+    
+    // Map prediction to direction and sentiment
+    let direction = 'neutral';
+    let sentiment = 0;
+    
+    if (newFormat.prediction) {
+      const pred = newFormat.prediction.toLowerCase();
+      if (pred === 'up') {
+        direction = 'up';
+        sentiment = 5; // Positive sentiment
+      } else if (pred === 'down') {
+        direction = 'down';
+        sentiment = -5; // Negative sentiment
+      } else if (pred === 'sideways') {
+        direction = 'neutral';
+        sentiment = 0; // Neutral sentiment
+      }
+    }
+    
+    // Determine expected_change_percent from magnitude
+    let expected_change_percent = '0%';
+    if (newFormat.magnitude) {
+      if (direction === 'neutral') {
+        expected_change_percent = '-1% to 1%'; // Sideways movement
+      } else if (newFormat.magnitude === 'significant') {
+        expected_change_percent = direction === 'up' ? '>5%' : '<-5%';
+      } else if (newFormat.magnitude === 'moderate') {
+        expected_change_percent = direction === 'up' ? '2-5%' : '-2% to -5%';
+      } else {
+        expected_change_percent = direction === 'up' ? '0-2%' : '-2% to 0%';
+      }
+    }
+    
+    // Create a summary from key factors if needed
+    let summary = newFormat.summary;
+    if (!summary && newFormat.key_factors) {
+      const keyFactors = Array.isArray(newFormat.key_factors) 
+        ? newFormat.key_factors.join('. ') 
+        : 'No specific factors identified.';
+        
+      const predictionText = direction === 'up' ? 'upward' :
+                            direction === 'down' ? 'downward' : 'sideways';
+      
+      summary = `Analysis predicts ${predictionText} movement with ${newFormat.confidence || 'medium'} confidence. ${keyFactors}`;
+    }
+    
+    // Convert key_factors to price_drivers
+    const price_drivers = [];
+    if (newFormat.key_factors && Array.isArray(newFormat.key_factors)) {
+      for (const factor of newFormat.key_factors) {
+        price_drivers.push({
+          factor,
+          impact: direction === 'up' ? 'positive' : 
+                 direction === 'down' ? 'negative' : 'neutral',
+          confidence: newFormat.confidence || 'medium'
+        });
+      }
+    }
+    
+    // Also convert risks to price drivers
+    if (newFormat.risks && Array.isArray(newFormat.risks)) {
+      // Add risks as negative or neutral price drivers depending on prediction
+      for (const risk of newFormat.risks) {
+        price_drivers.push({
+          factor: risk,
+          impact: direction === 'up' ? 'negative' : 'neutral', // Risks for UP prediction are negative, otherwise neutral
+          confidence: newFormat.confidence || 'medium'
+        });
+      }
+    }
+    
+    // Ensure key_articles have the right format
+    const key_articles = newFormat.key_articles || [];
+    
+    // Get timeframe label
+    const timeframe_label = this.getTimeframeLabel(timeframe);
+    
+    // Get display order
+    const display_order = this.getDisplayOrder(timeframe);
+    
+    // Ensure each key article has the required fields
+    for (const article of key_articles) {
+      // Ensure required fields are present
+      if (!article.confidence) {
+        article.confidence = newFormat.confidence || 'medium';
+      }
+      if (!article.title) {
+        article.title = "Untitled Article";
+      }
+      if (!article.source) {
+        article.source = "Unknown Source";
+      }
+      if (!article.url) {
+        article.url = "#";
+      }
+      
+      // Ensure each article has a date, use current date if not present
+      if (!article.publishedAt) {
+        const formattedDate = new Date().toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        article.publishedAt = formattedDate;
+      }
+      
+      // Ensure impact_summary is present and substantive
+      if (!article.impact_summary) {
+        // Create a default detailed summary if none exists
+        const impactDirection = direction === 'up' ? 'positive' : direction === 'down' ? 'negative' : 'neutral';
+        article.impact_summary = `This article provides ${impactDirection} insights regarding ${symbol}'s performance. It includes key information that contributes to the overall ${newFormat.confidence || 'medium'} confidence prediction for ${timeframe_label}.`;
+      }
+      
+      // Remove sourceCredibility fields if they're all unknown
+      if (article.sourceCredibility) {
+        if (article.sourceCredibility.reliability === 'unknown' && 
+            article.sourceCredibility.bias === 'unknown' && 
+            article.sourceCredibility.factualReporting === 'unknown') {
+          delete article.sourceCredibility;
+        }
+      }
+      
+      // Add timeframe information to each article
+      if (!article.timeframe_label) {
+        article.timeframe_label = timeframe_label;
+      }
+      
+      if (!article.for_timeframe) {
+        article.for_timeframe = timeframe;
+      }
+    }
+    
+    return {
+      sentiment,
+      direction,
+      expected_change_percent,
       confidence_level: newFormat.confidence || 'medium',
-      summary: `${timeframe} Analysis: ${newFormat.prediction} movement expected with ${newFormat.confidence} confidence. Key timing considerations: ${newFormat.key_factors.map(f => f.timing).join(', ')}`,
-      price_drivers: priceDrivers,
-      key_articles: keyArticles,
-      risks: risks,
-      timeframe: timeframe,
-      timeframe_label: this.getTimeframeLabel(timeframe),
-      display_order: this.getDisplayOrder(timeframe)
+      summary,
+      price_drivers,
+      key_articles,
+      timeframe_label,
+      display_order
     };
-
-    return legacyFormat;
   }
   
   // Helper to get standardized timeframe label
