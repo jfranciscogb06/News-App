@@ -1,8 +1,4 @@
 const mongoose = require('mongoose');
-const NodeCache = require('node-cache');
-
-// In-memory cache with 5-minute TTL
-const memoryCache = new NodeCache({ stdTTL: 300 });
 
 // Define the schema for news cache - using a clear, normalized structure
 const newsCacheSchema = new mongoose.Schema({
@@ -34,16 +30,11 @@ const newsCacheSchema = new mongoose.Schema({
     type: Date,
     required: true,
     index: true
-  },
-  version: {
-    type: Number,
-    default: 1
   }
 });
 
 // Create indexes for efficient queries
 newsCacheSchema.index({ symbol: 1, expiresAt: 1 });
-newsCacheSchema.index({ createdAt: 1 }, { expireAfterSeconds: 3600 }); // Auto-delete after 1 hour
 
 // Create the model
 const NewsCacheModel = mongoose.model('NewsCache', newsCacheSchema);
@@ -53,36 +44,43 @@ const NewsCacheModel = mongoose.model('NewsCache', newsCacheSchema);
  */
 class NewsCache {
   /**
-   * Get cached analysis data for a symbol
-   * @param {string} symbol - Stock symbol
+   * Get cached news analysis for a symbol
+   * @param {string} symbol - Stock symbol to retrieve
    * @returns {Promise<Object|null>} - Cached data or null if not found/expired
    */
   static async getBySymbol(symbol) {
     try {
+      // Validate input
+      if (!symbol || typeof symbol !== 'string') {
+        console.error('Invalid symbol provided to cache lookup');
+        return null;
+      }
+
       const normalizedSymbol = symbol.toUpperCase().trim();
       
-      // Check memory cache first
-      const memoryKey = `news_${normalizedSymbol}`;
-      const memoryData = memoryCache.get(memoryKey);
-      if (memoryData) {
-        return memoryData;
-      }
-      
-      // If not in memory, check MongoDB
-      const cacheEntry = await NewsCacheModel.findOne({
+      const result = await NewsCacheModel.findOne({
         symbol: normalizedSymbol,
         expiresAt: { $gt: new Date() }
       });
       
-      if (cacheEntry) {
-        // Store in memory cache for faster subsequent access
-        memoryCache.set(memoryKey, cacheEntry.toObject());
-        return cacheEntry.toObject();
+      if (!result) {
+        console.log(`Cache miss for symbol: ${normalizedSymbol}`);
+        return null;
       }
       
-      return null;
+      console.log(`Cache hit for symbol: ${normalizedSymbol}, expires in ${this.getTimeUntilExpiry(result.expiresAt)}`);
+      
+      // Transform the data into the exact format expected by the client
+      return {
+        symbol: normalizedSymbol,
+        timestamp: new Date(),
+        analysis: result.analysis,
+        source: 'cache',
+        articleCount: result.articleCount,
+        sourceCredibility: result.sourceCredibility
+      };
     } catch (error) {
-      console.error(`Error getting cache for ${symbol}:`, error);
+      console.error(`Error retrieving cache for ${symbol}:`, error);
       return null;
     }
   }
@@ -96,43 +94,42 @@ class NewsCache {
    */
   static async save(symbol, analysis, options = {}) {
     try {
+      // Validate input
       if (!symbol || !analysis) {
         console.error('Missing required parameters for cache save');
         return false;
       }
 
       const normalizedSymbol = symbol.toUpperCase().trim();
-      const memoryKey = `news_${normalizedSymbol}`;
       
+      // Extract options with defaults
       const { 
         sourceCredibility = null,
         articleCount = 0,
-        ttlHours = 0.5
+        ttlHours = 0.5 // Default TTL: 30 minutes (changed from 24 hours)
       } = options;
       
-      // Calculate expiration with slight randomization
-      const randomMinutes = Math.floor(Math.random() * 30);
+      // Calculate expiration with slight randomization to prevent cache stampedes
+      const randomMinutes = Math.floor(Math.random() * 30); // 0-30 minutes of randomness
       const expiresAt = new Date();
       expiresAt.setHours(expiresAt.getHours() + ttlHours);
       expiresAt.setMinutes(expiresAt.getMinutes() + randomMinutes);
       
-      // Create cache entry
+      // Remove any existing entries for this symbol
+      await NewsCacheModel.deleteMany({ symbol: normalizedSymbol });
+      
+      // Create the new cache entry
       const cacheEntry = new NewsCacheModel({
         symbol: normalizedSymbol,
         analysis,
         sourceCredibility,
         articleCount,
-        expiresAt,
-        version: 1
+        expiresAt
       });
       
-      // Save to MongoDB and memory cache in parallel
-      await Promise.all([
-        NewsCacheModel.deleteMany({ symbol: normalizedSymbol }),
-        cacheEntry.save(),
-        memoryCache.set(memoryKey, cacheEntry.toObject())
-      ]);
+      await cacheEntry.save();
       
+      // Log expiration time in minutes for short TTLs
       const ttlMinutes = ttlHours * 60;
       console.log(`Cache saved for ${normalizedSymbol}, expires in ${ttlMinutes.toFixed(0)} minutes (plus ${randomMinutes} minutes of randomness)`);
       return true;
@@ -144,26 +141,23 @@ class NewsCache {
 
   /**
    * Clean expired cache entries
-   * @returns {Promise<void>}
+   * @returns {Promise<number>} - Number of deleted entries
    */
   static async cleanExpired() {
     try {
-      const now = new Date();
-      
-      // Clean MongoDB cache
-      await NewsCacheModel.deleteMany({
-        expiresAt: { $lte: now }
+      const result = await NewsCacheModel.deleteMany({
+        expiresAt: { $lte: new Date() }
       });
       
-      // Clean memory cache
-      memoryCache.keys().forEach(key => {
-        const data = memoryCache.get(key);
-        if (data && data.expiresAt <= now) {
-          memoryCache.del(key);
-        }
-      });
+      const count = result.deletedCount;
+      if (count > 0) {
+        console.log(`Cleaned ${count} expired cache entries`);
+      }
+      
+      return count;
     } catch (error) {
-      console.error('Error cleaning cache:', error);
+      console.error('Error cleaning expired cache:', error);
+      return 0;
     }
   }
 

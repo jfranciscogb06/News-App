@@ -768,40 +768,44 @@ class NewsService {
   async collectAndAnalyzeNews(symbol, maxArticles = 50) {
     try {
       console.log(`Collecting news for ${symbol}...`);
+      let articles = await this.getGoogleNewsArticles(symbol);
       
-      // Get articles and preprocess them in parallel
-      const articles = await this.getGoogleNewsArticles(symbol);
+      // Pre-process articles to add extra metadata
+      articles = this.preprocessArticles(articles);
       
-      // Pre-process articles with optimized filtering
-      const preprocessedArticles = this.preprocessArticles(articles);
+      // Apply keyword filtering
+      articles = this.filterArticlesByKeywords(symbol, articles);
       
-      // Apply keyword filtering and source validation in parallel
-      const [keywordFiltered, validatedArticles] = await Promise.all([
-        this.filterArticlesByKeywords(symbol, preprocessedArticles),
-        sourceValidationService.filterArticlesByCredibility(preprocessedArticles, {
-          minCredibilityScore: 50,
-          excludeOpinions: false,
-          maxSensationalism: 'moderate',
-          balanceBias: true
-        })
-      ]);
+      console.log(`Found ${articles.length} relevant articles after keyword filtering`);
       
-      // Merge results and remove duplicates
-      const mergedArticles = this.mergeAndDeduplicateArticles(keywordFiltered, validatedArticles);
+      // Apply source validation to filter out unreliable or heavily biased sources
+      articles = sourceValidationService.filterArticlesByCredibility(articles, {
+        minCredibilityScore: 50,        // Only keep articles with at least moderate credibility
+        excludeOpinions: false,         // Include opinion pieces (can be useful for sentiment)
+        maxSensationalism: 'moderate',  // Filter out highly sensationalist articles
+        balanceBias: true               // Try to maintain political balance in sources
+      });
       
-      // Score articles and sort in one pass
-      const scoredArticles = this.scoreArticlesByInformationalValue(mergedArticles)
+      console.log(`Filtered to ${articles.length} articles after credibility validation`);
+      
+      // Score articles based on informational value
+      articles = this.scoreArticlesByInformationalValue(articles);
+      
+      // Sort by informational score and limit to maxArticles
+      articles = articles
         .sort((a, b) => b.informationalScore - a.informationalScore)
         .slice(0, maxArticles);
       
-      console.log(`Selected ${scoredArticles.length} most informative articles for analysis`);
+      console.log(`Selected ${articles.length} most informative articles for analysis`);
       
-      // Process articles in parallel
+      // Process each article to get full content if needed
       const processedArticles = await Promise.all(
-        scoredArticles.map(async (article) => ({
-          ...article,
-          content: article.description
-        }))
+        articles.map(async (article) => {
+          return {
+            ...article,
+            content: article.description, // Use description as content
+          };
+        })
       );
       
       return {
@@ -1068,25 +1072,6 @@ class NewsService {
         informationalScore: score
       };
     });
-  }
-
-  // New helper method to merge and deduplicate articles
-  mergeAndDeduplicateArticles(articles1, articles2) {
-    const uniqueUrls = new Set();
-    const merged = [];
-    
-    // Helper function to add unique article
-    const addUniqueArticle = (article) => {
-      if (!article.url || uniqueUrls.has(article.url)) return;
-      uniqueUrls.add(article.url);
-      merged.push(article);
-    };
-    
-    // Add articles from both arrays
-    articles1.forEach(addUniqueArticle);
-    articles2.forEach(addUniqueArticle);
-    
-    return merged;
   }
 }
 
