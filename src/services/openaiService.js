@@ -710,36 +710,121 @@ Content: ${article.description || article.content || 'No content available'}
     
     console.log(`Converting new format to legacy format for ${timeframe}`);
     
-    // Map prediction to direction and sentiment
+    // Map prediction to direction and sentiment with more nuanced scoring
     let direction = 'neutral';
     let sentiment = 0;
     
     if (newFormat.prediction) {
       const pred = newFormat.prediction.toLowerCase();
-      if (pred === 'up') {
-        direction = 'up';
-        sentiment = 5; // Positive sentiment
-      } else if (pred === 'down') {
-        direction = 'down';
-        sentiment = -5; // Negative sentiment
-      } else if (pred === 'sideways') {
-        direction = 'neutral';
-        sentiment = 0; // Neutral sentiment
+      const confidence = newFormat.confidence?.toLowerCase() || 'medium';
+      const magnitude = newFormat.magnitude?.toLowerCase() || 'slight';
+      
+      // Define sentiment ranges based on confidence and magnitude
+      const sentimentRanges = {
+        up: {
+          high: {
+            significant: { min: 7, max: 10 },
+            moderate: { min: 5, max: 6 },
+            slight: { min: 3, max: 4 }
+          },
+          medium: {
+            significant: { min: 6, max: 8 },
+            moderate: { min: 4, max: 5 },
+            slight: { min: 2, max: 3 }
+          },
+          low: {
+            significant: { min: 5, max: 7 },
+            moderate: { min: 3, max: 4 },
+            slight: { min: 1, max: 2 }
+          }
+        },
+        down: {
+          high: {
+            significant: { min: -10, max: -7 },
+            moderate: { min: -6, max: -5 },
+            slight: { min: -4, max: -3 }
+          },
+          medium: {
+            significant: { min: -8, max: -6 },
+            moderate: { min: -5, max: -4 },
+            slight: { min: -3, max: -2 }
+          },
+          low: {
+            significant: { min: -7, max: -5 },
+            moderate: { min: -4, max: -3 },
+            slight: { min: -2, max: -1 }
+          }
+        },
+        sideways: {
+          high: { min: -1, max: 1 },
+          medium: { min: -1, max: 1 },
+          low: { min: -1, max: 1 }
+        }
+      };
+
+      // Get the appropriate range based on prediction, confidence, and magnitude
+      let range;
+      if (pred === 'sideways') {
+        range = sentimentRanges.sideways[confidence];
+      } else {
+        range = sentimentRanges[pred][confidence][magnitude];
       }
+
+      // Assign a random value within the range for more natural variation
+      sentiment = Math.floor(Math.random() * (range.max - range.min + 1)) + range.min;
+      direction = pred;
     }
     
-    // Determine expected_change_percent from magnitude
+    // Determine expected_change_percent from magnitude with more specific ranges
     let expected_change_percent = '0%';
     if (newFormat.magnitude) {
-      if (direction === 'neutral') {
-        expected_change_percent = '-1% to 1%'; // Sideways movement
-      } else if (newFormat.magnitude === 'significant') {
-        expected_change_percent = direction === 'up' ? '>5%' : '<-5%';
-      } else if (newFormat.magnitude === 'moderate') {
-        expected_change_percent = direction === 'up' ? '2-5%' : '-2% to -5%';
-      } else {
-        expected_change_percent = direction === 'up' ? '0-2%' : '-2% to 0%';
-      }
+      const confidence = newFormat.confidence?.toLowerCase() || 'medium';
+      const magnitude = newFormat.magnitude.toLowerCase();
+      
+      // Define specific percentage ranges based on confidence and magnitude
+      const percentageRanges = {
+        up: {
+          high: {
+            significant: '7-12%',
+            moderate: '4-6%',
+            slight: '1-3%'
+          },
+          medium: {
+            significant: '5-8%',
+            moderate: '3-5%',
+            slight: '0.5-2%'
+          },
+          low: {
+            significant: '3-6%',
+            moderate: '2-4%',
+            slight: '0-1%'
+          }
+        },
+        down: {
+          high: {
+            significant: '-12% to -7%',
+            moderate: '-6% to -4%',
+            slight: '-3% to -1%'
+          },
+          medium: {
+            significant: '-8% to -5%',
+            moderate: '-5% to -3%',
+            slight: '-2% to -0.5%'
+          },
+          low: {
+            significant: '-6% to -3%',
+            moderate: '-4% to -2%',
+            slight: '-1% to 0%'
+          }
+        },
+        sideways: {
+          high: '-1% to 1%',
+          medium: '-1% to 1%',
+          low: '-1% to 1%'
+        }
+      };
+
+      expected_change_percent = percentageRanges[direction][confidence][magnitude];
     }
     
     // Create a summary from key factors if needed
