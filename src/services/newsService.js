@@ -3,6 +3,7 @@ const cheerio = require('cheerio');
 const config = require('../config/config');
 const openaiService = require('./openaiService');
 const sourceValidationService = require('./sourceValidationService');
+const polygonService = require('./polygonService');
 
 class NewsService {
   constructor() {
@@ -797,6 +798,16 @@ class NewsService {
         .slice(0, maxArticles);
       
       console.log(`Selected ${articles.length} most informative articles for analysis`);
+
+      // Get technical indicators and historical patterns
+      let technicalData = null;
+      let historicalPatterns = null;
+      try {
+        technicalData = await polygonService.getTechnicalIndicators(symbol);
+        historicalPatterns = await polygonService.getHistoricalPatterns(symbol);
+      } catch (error) {
+        console.error('Error fetching technical data:', error);
+      }
       
       // Process each article to get full content if needed
       const processedArticles = await Promise.all(
@@ -810,7 +821,9 @@ class NewsService {
       
       return {
         articles: processedArticles,
-        count: processedArticles.length
+        count: processedArticles.length,
+        technicalData,
+        historicalPatterns
       };
     } catch (error) {
       console.error('Error collecting and analyzing news:', error);

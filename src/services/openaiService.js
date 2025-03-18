@@ -259,6 +259,24 @@ class OpenAIService {
     try {
       console.log(`Selecting most relevant articles for ${symbol}...`);
       
+      // Extract technical data if available
+      const technicalData = articles.technicalData;
+      const historicalPatterns = articles.historicalPatterns;
+      
+      // Add technical context to the system message if available
+      let technicalContext = '';
+      if (technicalData) {
+        technicalContext = `
+TECHNICAL INDICATORS:
+${JSON.stringify(technicalData, null, 2)}
+
+HISTORICAL PATTERNS:
+${JSON.stringify(historicalPatterns, null, 2)}
+
+When selecting articles, consider how they relate to these technical indicators and historical patterns. Articles that discuss developments that could impact these technical indicators should be prioritized.
+        `;
+      }
+      
       const analysisResponse = await this.openai.chat.completions.create({
         model: "gpt-3.5-turbo-0125",
         messages: [
@@ -289,6 +307,8 @@ CRITICAL SELECTION CRITERIA:
    - The article URL
    - A brief explanation of why it's relevant for predicting ${symbol}'s future price movement
    - Indicate which timeframes (7 days, 1 month, 3 months, 6 months) the article is most relevant for
+
+${technicalContext}
 
 Select up to ${maxArticles} articles, prioritizing those with unique insights across different timeframes.`
           },
