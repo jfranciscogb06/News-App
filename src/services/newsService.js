@@ -3,7 +3,6 @@ const cheerio = require('cheerio');
 const config = require('../config/config');
 const openaiService = require('./openaiService');
 const sourceValidationService = require('./sourceValidationService');
-const polygonService = require('./polygonService');
 
 class NewsService {
   constructor() {
@@ -768,46 +767,12 @@ class NewsService {
   // Process all Google News articles obtained from queries
   async collectAndAnalyzeNews(symbol, maxArticles = 50) {
     try {
-      console.log(`Collecting news for ${symbol}...`);
-      let articles = await this.getGoogleNewsArticles(symbol);
+      // Get news articles
+      const articles = await this.getGoogleNewsArticles(symbol);
       
-      // Pre-process articles to add extra metadata
-      articles = this.preprocessArticles(articles);
-      
-      // Apply keyword filtering
-      articles = this.filterArticlesByKeywords(symbol, articles);
-      
-      console.log(`Found ${articles.length} relevant articles after keyword filtering`);
-      
-      // Apply source validation to filter out unreliable or heavily biased sources
-      articles = sourceValidationService.filterArticlesByCredibility(articles, {
-        minCredibilityScore: 50,        // Only keep articles with at least moderate credibility
-        excludeOpinions: false,         // Include opinion pieces (can be useful for sentiment)
-        maxSensationalism: 'moderate',  // Filter out highly sensationalist articles
-        balanceBias: true               // Try to maintain political balance in sources
-      });
-      
-      console.log(`Filtered to ${articles.length} articles after credibility validation`);
-      
-      // Score articles based on informational value
-      articles = this.scoreArticlesByInformationalValue(articles);
-      
-      // Sort by informational score and limit to maxArticles
-      articles = articles
-        .sort((a, b) => b.informationalScore - a.informationalScore)
-        .slice(0, maxArticles);
-      
-      console.log(`Selected ${articles.length} most informative articles for analysis`);
-
-      // Get technical indicators and historical patterns
+      // Initialize technical data and historical patterns as null
       let technicalData = null;
       let historicalPatterns = null;
-      try {
-        technicalData = await polygonService.getTechnicalIndicators(symbol);
-        historicalPatterns = await polygonService.getHistoricalPatterns(symbol);
-      } catch (error) {
-        console.error('Error fetching technical data:', error);
-      }
       
       // Process each article to get full content if needed
       const processedArticles = await Promise.all(

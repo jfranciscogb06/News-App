@@ -15,9 +15,6 @@ module.exports = {
   serpapi: {
     apiKey: process.env.SERPAPI_API_KEY
   },
-  polygon: {
-    apiKey: process.env.POLYGONIO_API_KEY
-  },
   database: {
     url: process.env.MONGODB_URI
   }
