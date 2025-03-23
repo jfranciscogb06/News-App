@@ -392,15 +392,16 @@ Consider these factors:
 5. Investor interest
 6. Recent market activity
 
-IMPORTANT: You must respond with ONLY a JSON object in the following format:
-{"stocks":["AAPL","MSFT","GOOGL"]}
+IMPORTANT: You must respond with ONLY a JSON object containing a single array of stock symbols.
+Example format: {"stocks":["AAPL","MSFT","GOOGL"]}
 
 Rules:
-1. The response must be a single line
-2. No newlines or formatting
+1. Response must be a single line of valid JSON
+2. No newlines, formatting, or markdown
 3. No explanations or additional text
 4. Only include valid stock symbols (1-5 uppercase letters)
-5. The response must be valid JSON that can be parsed by JSON.parse()`
+5. The response must be parseable by JSON.parse()
+6. Do not include any backticks or code block markers`
           }
         ],
         temperature: 0.2,
@@ -426,6 +427,8 @@ Rules:
           .replace(/```$/, '')
           // Remove any whitespace and newlines
           .replace(/\s+/g, '')
+          // Remove any backticks
+          .replace(/`/g, '')
           // Ensure it starts with { and ends with }
           .replace(/^[^{]*({.*})[^}]*$/, '$1');
         
@@ -434,15 +437,17 @@ Rules:
         // Try to parse the cleaned content
         stocks = JSON.parse(cleanContent);
         
-        // The response should now be an object with a stocks array
-        if (stocks.stocks && Array.isArray(stocks.stocks)) {
-          stocks = stocks.stocks;
-        } else if (Array.isArray(stocks)) {
-          // If it's already an array, that's fine too
-          stocks = stocks;
-        } else {
-          throw new Error('OpenAI response does not contain a valid stocks array');
+        // Validate the response structure
+        if (!stocks || typeof stocks !== 'object') {
+          throw new Error('Response is not a valid JSON object');
         }
+        
+        // The response should have a stocks array
+        if (!stocks.stocks || !Array.isArray(stocks.stocks)) {
+          throw new Error('Response does not contain a valid stocks array');
+        }
+        
+        stocks = stocks.stocks;
       } catch (error) {
         console.error('Error parsing OpenAI response:', error);
         console.error('Raw content:', content);
