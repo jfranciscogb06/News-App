@@ -396,7 +396,8 @@ IMPORTANT: You must respond with ONLY a JSON object in the following format, wit
 }
 
 The response must be valid JSON and contain only uppercase stock symbols.
-Each symbol must be a valid trading symbol (1-5 letters).`
+Each symbol must be a valid trading symbol (1-5 letters).
+Do not include any explanations, notes, or additional text.`
           }
         ],
         temperature: 0.2,
@@ -411,8 +412,16 @@ Each symbol must be a valid trading symbol (1-5 letters).`
       let stocks;
       
       try {
-        // If the content is already a string (which it should be), parse it
-        stocks = typeof content === 'string' ? JSON.parse(content.trim()) : content;
+        // Clean the content string before parsing
+        const cleanContent = content
+          .trim()
+          .replace(/[\n\r]/g, '') // Remove newlines
+          .replace(/\\/g, '\\\\') // Escape backslashes
+          .replace(/"/g, '\\"')   // Escape quotes
+          .replace(/`/g, '"');    // Replace backticks with quotes
+        
+        // Try to parse the cleaned content
+        stocks = JSON.parse(cleanContent);
         
         // The response should now be an object with a stocks array
         if (stocks.stocks && Array.isArray(stocks.stocks)) {
@@ -425,6 +434,7 @@ Each symbol must be a valid trading symbol (1-5 letters).`
         }
       } catch (error) {
         console.error('Error parsing OpenAI response:', error);
+        console.error('Raw content:', content);
         throw new Error('Invalid response format from OpenAI');
       }
 
