@@ -16,6 +16,6 @@ module.exports = {
     apiKey: process.env.SERPAPI_API_KEY
   },
   database: {
-    url: process.env.MONGODB_URI
+    url: process.env.DATABASE_URL
   }
 }; 
