@@ -16,9 +16,28 @@ const createPopularSearchesTableQuery = `
   CREATE INDEX IF NOT EXISTS idx_popular_searches_last_searched ON popular_searches(last_searched DESC);
 `;
 
-// Initialize the table
+// Create the news cache table if it doesn't exist
+const createNewsCacheTableQuery = `
+  CREATE TABLE IF NOT EXISTS news_cache (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(10) NOT NULL,
+    data JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    UNIQUE(symbol)
+  );
+  
+  CREATE INDEX IF NOT EXISTS idx_news_cache_symbol ON news_cache(symbol);
+  CREATE INDEX IF NOT EXISTS idx_news_cache_expires_at ON news_cache(expires_at);
+`;
+
+// Initialize the tables
 db.query(createPopularSearchesTableQuery).catch(err => {
   console.error('Error creating popular_searches table:', err);
+});
+
+db.query(createNewsCacheTableQuery).catch(err => {
+  console.error('Error creating news_cache table:', err);
 });
 
 // In-memory cache for popular stocks
@@ -215,17 +234,17 @@ class CacheService {
         }
       }
       
-      // Clear MongoDB cache
-      const NewsCache = require('../models/newsCache');
-      for (const symbol of stocks) {
-        const result = await NewsCache.clearBySymbol(symbol);
-        if (result > 0) {
-          dbClearedCount++;
-        }
+      // Clear PostgreSQL cache
+      if (stocks.length > 0) {
+        const result = await db.query(
+          'DELETE FROM news_cache WHERE symbol = ANY($1)',
+          [stocks]
+        );
+        dbClearedCount = result.rowCount;
       }
       
       if (memClearedCount > 0 || dbClearedCount > 0) {
-        console.log(`Cleared ${memClearedCount} stocks from memory cache and ${dbClearedCount} from MongoDB`);
+        console.log(`Cleared ${memClearedCount} stocks from memory cache and ${dbClearedCount} from PostgreSQL`);
       }
     } catch (error) {
       console.error('Error clearing cache for stocks:', error);
@@ -328,12 +347,21 @@ class CacheService {
         baseTtlMinutes = 30 + ((groupId - 1) * 2);
       }
       
-      // Also save to MongoDB for persistence with the staggered TTL
-      const NewsCache = require('../models/newsCache');
-      await NewsCache.save(symbol, analysis, {
-        ttlHours: baseTtlMinutes / 60 // Convert minutes to hours
-      });
-      console.log(`Cached ${symbol} in MongoDB with base TTL of ${baseTtlMinutes} minutes`);
+      // Save to PostgreSQL for persistence with the staggered TTL
+      const expiresAt = new Date();
+      expiresAt.setMinutes(expiresAt.getMinutes() + baseTtlMinutes);
+      
+      await db.query(
+        `INSERT INTO news_cache (symbol, data, expires_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (symbol) 
+         DO UPDATE SET 
+           data = EXCLUDED.data,
+           expires_at = EXCLUDED.expires_at`,
+        [symbol, analysis, expiresAt]
+      );
+      
+      console.log(`Cached ${symbol} in PostgreSQL with base TTL of ${baseTtlMinutes} minutes`);
     } catch (error) {
       console.error(`Error caching ${symbol}:`, error);
     }
@@ -506,7 +534,22 @@ Each symbol must be a valid trading symbol (1-5 letters).`
         return popularStocksCache.get(normalizedSymbol);
       }
       
-      console.log(`Popular cache miss for symbol: ${normalizedSymbol}`);
+      // Check PostgreSQL cache
+      const result = await db.query(
+        `SELECT data FROM news_cache 
+         WHERE symbol = $1 AND expires_at > CURRENT_TIMESTAMP`,
+        [normalizedSymbol]
+      );
+      
+      if (result.rows.length > 0) {
+        const data = result.rows[0].data;
+        // Update in-memory cache
+        popularStocksCache.set(normalizedSymbol, data);
+        console.log(`PostgreSQL cache hit for symbol: ${normalizedSymbol}`);
+        return data;
+      }
+      
+      console.log(`Cache miss for symbol: ${normalizedSymbol}`);
       return null;
     } catch (error) {
       console.error('Error getting stock data from cache:', error);
@@ -564,8 +607,18 @@ Each symbol must be a valid trading symbol (1-5 letters).`
       
       // Clear PostgreSQL tables
       try {
+        // First delete expired entries
+        await db.query('DELETE FROM news_cache WHERE expires_at <= CURRENT_TIMESTAMP');
+        console.log('Cleared expired entries from news_cache');
+        
+        // Then truncate the tables
         await db.query('TRUNCATE TABLE news_cache, popular_searches CASCADE');
         console.log('PostgreSQL tables cleared');
+        
+        // Reset sequences
+        await db.query('ALTER SEQUENCE news_cache_id_seq RESTART WITH 1');
+        await db.query('ALTER SEQUENCE popular_searches_id_seq RESTART WITH 1');
+        console.log('PostgreSQL sequences reset');
       } catch (dbError) {
         console.error('Error clearing PostgreSQL tables:', dbError);
       }
