@@ -1,29 +1,25 @@
-const mongoose = require('mongoose');
 const db = require('../utils/db');
 const newsService = require('./newsService');
 const openaiService = require('./openaiService');
 
-// Define the schema for popular searches
-const popularSearchSchema = new mongoose.Schema({
-  symbol: {
-    type: String,
-    required: true,
-    uppercase: true,
-    trim: true,
-    index: true
-  },
-  count: {
-    type: Number,
-    default: 1
-  },
-  last_searched: {
-    type: Date,
-    default: Date.now
-  }
-});
+// Create the popular searches table if it doesn't exist
+const createPopularSearchesTableQuery = `
+  CREATE TABLE IF NOT EXISTS popular_searches (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(10) NOT NULL,
+    count INTEGER DEFAULT 1,
+    last_searched TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(symbol)
+  );
+  
+  CREATE INDEX IF NOT EXISTS idx_popular_searches_count ON popular_searches(count DESC);
+  CREATE INDEX IF NOT EXISTS idx_popular_searches_last_searched ON popular_searches(last_searched DESC);
+`;
 
-// Create the model
-const PopularSearchModel = mongoose.model('PopularSearch', popularSearchSchema);
+// Initialize the table
+db.query(createPopularSearchesTableQuery).catch(err => {
+  console.error('Error creating popular_searches table:', err);
+});
 
 // In-memory cache for popular stocks
 const popularStocksCache = new Map();
@@ -425,11 +421,14 @@ Each symbol must be a valid trading symbol (1-5 letters).`
    */
   async getPopularStocksFromSearchHistory() {
     try {
-      const popularSearches = await PopularSearchModel.find()
-        .sort({ count: -1, last_searched: -1 })
-        .limit(POPULAR_STOCKS_COUNT);
+      const result = await db.query(
+        `SELECT symbol FROM popular_searches 
+         ORDER BY count DESC, last_searched DESC 
+         LIMIT $1`,
+        [POPULAR_STOCKS_COUNT]
+      );
       
-      const symbols = popularSearches.map(item => item.symbol);
+      const symbols = result.rows.map(item => item.symbol);
       console.log(`Retrieved ${symbols.length} popular stocks from search history`);
       return symbols;
     } catch (error) {
@@ -475,13 +474,14 @@ Each symbol must be a valid trading symbol (1-5 letters).`
       const normalizedSymbol = symbol.toUpperCase().trim();
       
       // Update or create a record for this symbol
-      await PopularSearchModel.updateOne(
-        { symbol: normalizedSymbol },
-        { 
-          $inc: { count: 1 },
-          $set: { last_searched: new Date() }
-        },
-        { upsert: true }
+      await db.query(
+        `INSERT INTO popular_searches (symbol, count, last_searched)
+         VALUES ($1, 1, CURRENT_TIMESTAMP)
+         ON CONFLICT (symbol) 
+         DO UPDATE SET 
+           count = popular_searches.count + 1,
+           last_searched = CURRENT_TIMESTAMP`,
+        [normalizedSymbol]
       );
       
       return true;
@@ -562,30 +562,12 @@ Each symbol must be a valid trading symbol (1-5 letters).`
         console.log('Global news cache cleared');
       }
       
-      // Clear MongoDB caches directly
+      // Clear PostgreSQL tables
       try {
-        const mongoose = require('mongoose');
-        
-        // List of collection names we want to clear
-        const collectionsToCheck = [
-          'newscaches',
-          'popularsearches',
-          'stockcaches'
-        ];
-        
-        for (const collectionName of collectionsToCheck) {
-          try {
-            const exists = await mongoose.connection.db.listCollections({name: collectionName}).hasNext();
-            if (exists) {
-              await mongoose.connection.db.collection(collectionName).deleteMany({});
-              console.log(`MongoDB collection ${collectionName} cleared`);
-            }
-          } catch (collectionError) {
-            console.error(`Error clearing collection ${collectionName}:`, collectionError);
-          }
-        }
-      } catch (mongoError) {
-        console.error('Error accessing MongoDB collections:', mongoError);
+        await db.query('TRUNCATE TABLE news_cache, popular_searches CASCADE');
+        console.log('PostgreSQL tables cleared');
+      } catch (dbError) {
+        console.error('Error clearing PostgreSQL tables:', dbError);
       }
       
       // Restart the staggered caching process with fresh data

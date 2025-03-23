@@ -1,1 +1,35 @@
-require('dotenv').config(); const mongoose = require('mongoose'); const NewsCache = require('./src/models/newsCache'); async function checkCache() { try { console.log('Testing connection to MongoDB...'); await mongoose.connect(process.env.MONGODB_URI); console.log('Connected to MongoDB successfully!'); console.log('Checking all documents in NewsCache collection...'); const NewsCacheModel = mongoose.models.NewsCache; const allDocs = await NewsCacheModel.find({}); console.log('Found ' + allDocs.length + ' documents in cache'); for(let i=0; i<allDocs.length; i++) { const doc = allDocs[i]; console.log('[' + (i+1) + '] Symbol: ' + doc.symbol + ', Expires in: ' + NewsCache.getTimeUntilExpiry(doc.expiresAt)); } await mongoose.disconnect(); } catch (err) { console.error('Error:', err); } } checkCache();
+require('dotenv').config();
+const NewsCache = require('./src/models/newsCache');
+const db = require('./src/utils/db');
+
+async function checkCache() {
+  try {
+    console.log('Testing connection to PostgreSQL...');
+    await db.query('SELECT NOW()');
+    console.log('Connected to PostgreSQL successfully!');
+
+    console.log('Checking all entries in news_cache table...');
+    const result = await db.query(
+      `SELECT symbol, analysis, expires_at 
+       FROM news_cache 
+       ORDER BY created_at DESC`
+    );
+
+    console.log('Found ' + result.rows.length + ' entries in cache');
+    
+    for (let i = 0; i < result.rows.length; i++) {
+      const entry = result.rows[i];
+      console.log(
+        `[${i + 1}] Symbol: ${entry.symbol}, ` +
+        `Expires in: ${NewsCache.getTimeUntilExpiry(entry.expires_at)}`
+      );
+    }
+
+  } catch (err) {
+    console.error('Error:', err);
+  } finally {
+    process.exit(0);
+  }
+}
+
+checkCache();

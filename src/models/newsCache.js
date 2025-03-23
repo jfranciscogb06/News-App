@@ -1,43 +1,25 @@
-const mongoose = require('mongoose');
+const db = require('../utils/db');
 
-// Define the schema for news cache - using a clear, normalized structure
-const newsCacheSchema = new mongoose.Schema({
-  symbol: {
-    type: String,
-    required: true,
-    uppercase: true,
-    trim: true,
-    index: true
-  },
-  analysis: {
-    type: mongoose.Schema.Types.Mixed,
-    required: true
-  },
-  sourceCredibility: {
-    type: mongoose.Schema.Types.Mixed,
-    default: null
-  },
-  articleCount: {
-    type: Number,
-    default: 0
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-    index: true
-  },
-  expiresAt: {
-    type: Date,
-    required: true,
-    index: true
-  }
+// Create the news cache table if it doesn't exist
+const createTableQuery = `
+  CREATE TABLE IF NOT EXISTS news_cache (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(10) NOT NULL,
+    analysis JSONB NOT NULL,
+    source_credibility JSONB,
+    article_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+  );
+  
+  CREATE INDEX IF NOT EXISTS idx_news_cache_symbol ON news_cache(symbol);
+  CREATE INDEX IF NOT EXISTS idx_news_cache_expires_at ON news_cache(expires_at);
+`;
+
+// Initialize the table
+db.query(createTableQuery).catch(err => {
+  console.error('Error creating news_cache table:', err);
 });
-
-// Create indexes for efficient queries
-newsCacheSchema.index({ symbol: 1, expiresAt: 1 });
-
-// Create the model
-const NewsCacheModel = mongoose.model('NewsCache', newsCacheSchema);
 
 /**
  * NewsCache class for handling caching of stock news analysis
@@ -58,26 +40,29 @@ class NewsCache {
 
       const normalizedSymbol = symbol.toUpperCase().trim();
       
-      const result = await NewsCacheModel.findOne({
-        symbol: normalizedSymbol,
-        expiresAt: { $gt: new Date() }
-      });
+      const result = await db.query(
+        `SELECT * FROM news_cache 
+         WHERE symbol = $1 AND expires_at > CURRENT_TIMESTAMP 
+         ORDER BY created_at DESC LIMIT 1`,
+        [normalizedSymbol]
+      );
       
-      if (!result) {
+      if (!result.rows || result.rows.length === 0) {
         console.log(`Cache miss for symbol: ${normalizedSymbol}`);
         return null;
       }
       
-      console.log(`Cache hit for symbol: ${normalizedSymbol}, expires in ${this.getTimeUntilExpiry(result.expiresAt)}`);
+      const cacheEntry = result.rows[0];
+      console.log(`Cache hit for symbol: ${normalizedSymbol}, expires in ${this.getTimeUntilExpiry(cacheEntry.expires_at)}`);
       
       // Transform the data into the exact format expected by the client
       return {
         symbol: normalizedSymbol,
         timestamp: new Date(),
-        analysis: result.analysis,
+        analysis: cacheEntry.analysis,
         source: 'cache',
-        articleCount: result.articleCount,
-        sourceCredibility: result.sourceCredibility
+        articleCount: cacheEntry.article_count,
+        sourceCredibility: cacheEntry.source_credibility
       };
     } catch (error) {
       console.error(`Error retrieving cache for ${symbol}:`, error);
@@ -106,7 +91,7 @@ class NewsCache {
       const { 
         sourceCredibility = null,
         articleCount = 0,
-        ttlHours = 0.5 // Default TTL: 30 minutes (changed from 24 hours)
+        ttlHours = 0.5 // Default TTL: 30 minutes
       } = options;
       
       // Calculate expiration with slight randomization to prevent cache stampedes
@@ -116,18 +101,24 @@ class NewsCache {
       expiresAt.setMinutes(expiresAt.getMinutes() + randomMinutes);
       
       // Remove any existing entries for this symbol
-      await NewsCacheModel.deleteMany({ symbol: normalizedSymbol });
+      await db.query(
+        'DELETE FROM news_cache WHERE symbol = $1',
+        [normalizedSymbol]
+      );
       
-      // Create the new cache entry
-      const cacheEntry = new NewsCacheModel({
-        symbol: normalizedSymbol,
-        analysis,
-        sourceCredibility,
-        articleCount,
-        expiresAt
-      });
-      
-      await cacheEntry.save();
+      // Insert the new cache entry
+      await db.query(
+        `INSERT INTO news_cache 
+         (symbol, analysis, source_credibility, article_count, expires_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          normalizedSymbol,
+          analysis,
+          sourceCredibility,
+          articleCount,
+          expiresAt
+        ]
+      );
       
       // Log expiration time in minutes for short TTLs
       const ttlMinutes = ttlHours * 60;
@@ -145,11 +136,11 @@ class NewsCache {
    */
   static async cleanExpired() {
     try {
-      const result = await NewsCacheModel.deleteMany({
-        expiresAt: { $lte: new Date() }
-      });
+      const result = await db.query(
+        'DELETE FROM news_cache WHERE expires_at <= CURRENT_TIMESTAMP RETURNING id'
+      );
       
-      const count = result.deletedCount;
+      const count = result.rowCount;
       if (count > 0) {
         console.log(`Cleaned ${count} expired cache entries`);
       }
@@ -167,9 +158,9 @@ class NewsCache {
    */
   static async clearAll() {
     try {
-      const result = await NewsCacheModel.deleteMany({});
-      console.log(`Cleared all cache: ${result.deletedCount} entries removed`);
-      return result.deletedCount;
+      const result = await db.query('DELETE FROM news_cache RETURNING id');
+      console.log(`Cleared all cache: ${result.rowCount} entries removed`);
+      return result.rowCount;
     } catch (error) {
       console.error('Error clearing all cache:', error);
       return 0;
@@ -184,13 +175,16 @@ class NewsCache {
   static async clearBySymbol(symbol) {
     try {
       const normalizedSymbol = symbol.toUpperCase().trim();
-      const result = await NewsCacheModel.deleteMany({ symbol: normalizedSymbol });
+      const result = await db.query(
+        'DELETE FROM news_cache WHERE symbol = $1 RETURNING id',
+        [normalizedSymbol]
+      );
       
-      if (result.deletedCount > 0) {
-        console.log(`Cleared cache for ${normalizedSymbol}: ${result.deletedCount} entries`);
+      if (result.rowCount > 0) {
+        console.log(`Cleared cache for ${normalizedSymbol}: ${result.rowCount} entries`);
       }
       
-      return result.deletedCount;
+      return result.rowCount;
     } catch (error) {
       console.error(`Error clearing cache for ${symbol}:`, error);
       return 0;

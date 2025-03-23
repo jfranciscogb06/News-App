@@ -9,12 +9,17 @@ const cacheService = require('./src/services/cacheService');
 // Initialize the app
 const app = express();
 
-// Connect to MongoDB
-db.mongoose.connection.on('connected', () => {
-  console.log('MongoDB connection established successfully');
-  // Initialize cache service after MongoDB connection is established
-  cacheService.initialize();
-});
+// Test PostgreSQL connection and initialize cache service
+db.query('SELECT NOW()')
+  .then(() => {
+    console.log('PostgreSQL connection established successfully');
+    // Initialize cache service after database connection is established
+    cacheService.initialize();
+  })
+  .catch(err => {
+    console.error('Error connecting to PostgreSQL:', err);
+    process.exit(1);
+  });
 
 // Middleware
 app.use(express.json());
