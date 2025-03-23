@@ -445,16 +445,7 @@ class NewsService {
       'recall': 7,
       'fine': 6,
       'regulatory': 5,
-      'compliance': 4,
-      
-      // Timeframe specific terms
-      'short term': 6,
-      'medium term': 6,
-      'long term': 6,
-      'next week': 7,
-      'next month': 7,
-      'next quarter': 7,
-      'next year': 7
+      'compliance': 4
     };
     
     // Essential keywords - at least one must be present
@@ -462,96 +453,28 @@ class NewsService {
     
     // Define date thresholds for different timeframes
     const now = new Date();
-    
-    // Strict timeframe thresholds (stricter than before)
+    const twoWeeksAgo = new Date(now);
+    twoWeeksAgo.setDate(now.getDate() - 14);
+    const oneMonthAgo = new Date(now);
+    oneMonthAgo.setMonth(now.getMonth() - 1);
+    const threeMonthsAgo = new Date(now);
+    threeMonthsAgo.setMonth(now.getMonth() - 3);
     const sixMonthsAgo = new Date(now);
     sixMonthsAgo.setMonth(now.getMonth() - 6);
     
-    const threeMonthsAgo = new Date(now);
-    threeMonthsAgo.setMonth(now.getMonth() - 3);
-    
-    const oneMonthAgo = new Date(now);
-    oneMonthAgo.setMonth(now.getMonth() - 1);
-    
-    const twoWeeksAgo = new Date(now);
-    twoWeeksAgo.setDate(now.getDate() - 14);
-    
-    // Log article age distribution before filtering
-    const ageGroups = {
-      recent: 0,      // < 2 weeks
-      moderate: 0,    // 2 weeks - 1 month 
-      older: 0,       // 1-3 months
-      historical: 0   // 3-6 months
-    };
-    
-    articles.forEach(article => {
-      let pubDate;
-      try {
-        if (article.publishedDate && article.publishedDate instanceof Date) {
-          pubDate = article.publishedDate;
-        } else if (article.pubDate) {
-          pubDate = new Date(article.pubDate);
-        } else if (article.publishedAt) {
-          // Try to parse from the string format
-          const dateMatch = article.publishedAt.match(/(\w+, )?(\w+ \d{1,2}, \d{4})/);
-          if (dateMatch && dateMatch[2]) {
-            pubDate = new Date(dateMatch[2]);
-          }
-        }
-        
-        if (pubDate && !isNaN(pubDate.getTime())) {
-          if (pubDate > twoWeeksAgo) {
-            ageGroups.recent++;
-          } else if (pubDate > oneMonthAgo) {
-            ageGroups.moderate++;
-          } else if (pubDate > threeMonthsAgo) {
-            ageGroups.older++;
-          } else if (pubDate > sixMonthsAgo) {
-            ageGroups.historical++;
-          }
-        }
-      } catch (e) {
-        console.error('Error parsing date:', e);
-      }
-    });
-    
-    console.log(`Article age distribution: Recent: ${ageGroups.recent}, Moderate: ${ageGroups.moderate}, Older: ${ageGroups.older}, Historical: ${ageGroups.historical}`);
-    
-    // Filter articles - remove anything older than 6 months
-    let filteredArticles = articles.filter(article => {
-      let pubDate;
-      if (article.publishedDate && article.publishedDate instanceof Date) {
-        pubDate = article.publishedDate;
-      } else if (article.pubDate) {
-        pubDate = new Date(article.pubDate);
-      } else if (article.publishedAt) {
-        const dateMatch = article.publishedAt.match(/(\w+, )?(\w+ \d{1,2}, \d{4})/);
-        if (dateMatch && dateMatch[2]) {
-          pubDate = new Date(dateMatch[2]);
-        }
-      }
-      
-      // Filter out articles older than 6 months
-      if (pubDate && !isNaN(pubDate.getTime()) && pubDate < sixMonthsAgo) {
-        return false;
-      }
-      
-      return true;
-    });
-    
     // Process articles and calculate relevance scores
-    const scoredArticles = filteredArticles.map(article => {
+    const scoredArticles = articles.map(article => {
       const combinedText = (article.title + ' ' + article.description).toLowerCase();
       
       // Article must contain the stock symbol to be considered
       if (!combinedText.includes(symbol.toLowerCase())) {
-        return { ...article, relevanceScore: 0, timeframeScores: {} };
+        return { ...article, relevanceScore: 0 };
       }
       
       // At least one essential keyword must be present
       const hasEssentialKeyword = essentialKeywords.some(word => combinedText.includes(word));
       if (!hasEssentialKeyword) {
-        return { ...article, relevanceScore: 0, timeframeScores: {} };
+        return { ...article, relevanceScore: 0 };
       }
       
       // Calculate relevance score based on keyword matches and weights
@@ -586,71 +509,7 @@ class NewsService {
         if (article.queryContext.includes('merger') || article.queryContext.includes('acquisition')) relevanceScore *= 1.3;
       }
       
-      // Determine publication date for timeframe relevance
-      let pubDate;
-      if (article.publishedDate && article.publishedDate instanceof Date) {
-        pubDate = article.publishedDate;
-      } else if (article.pubDate) {
-        pubDate = new Date(article.pubDate);
-      } else if (article.publishedAt) {
-        const dateMatch = article.publishedAt.match(/(\w+, )?(\w+ \d{1,2}, \d{4})/);
-        if (dateMatch && dateMatch[2]) {
-          pubDate = new Date(dateMatch[2]);
-        }
-      } else {
-        pubDate = new Date(); // Default to now if no date found
-      }
-      
-      // Calculate separate scores for each timeframe using the timeframe relevance
-      // Apply timeframe-specific recency boosts
-      const timeframeScores = {};
-      
-      // Base score from content relevance
-      if (article.timeframeRelevance) {
-        for (const [timeframe, score] of Object.entries(article.timeframeRelevance)) {
-          timeframeScores[timeframe] = relevanceScore * (1 + score * 0.1); // Boost by 10% per relevance point
-        }
-      } else {
-        // If no timeframe relevance data, use the same score for all timeframes
-        timeframeScores['7days'] = relevanceScore;
-        timeframeScores['1month'] = relevanceScore;
-        timeframeScores['3months'] = relevanceScore;
-        timeframeScores['6months'] = relevanceScore;
-      }
-      
-      // Apply timeframe-specific recency boosts based on publication date
-      if (pubDate && !isNaN(pubDate.getTime())) {
-        // 7-day forecasts: strong boost for very recent articles (0-14 days)
-        if (pubDate > twoWeeksAgo) {
-          timeframeScores['7days'] *= 2.0; // Double score for very recent articles
-        } else {
-          timeframeScores['7days'] *= 0.5; // Halve score for older articles
-        }
-        
-        // 1-month forecasts: boost for articles under 1 month
-        if (pubDate > oneMonthAgo) {
-          timeframeScores['1month'] *= 1.5; // 50% boost for recent articles
-        } else {
-          timeframeScores['1month'] *= 0.8; // Slight penalty for older articles
-        }
-        
-        // 3-month forecasts: boost for articles under 3 months
-        if (pubDate > threeMonthsAgo) {
-          timeframeScores['3months'] *= 1.3; // 30% boost for recent articles
-        }
-        
-        // 6-month forecasts: slight boost for recent articles, but all are relevant
-        if (pubDate > threeMonthsAgo) {
-          timeframeScores['6months'] *= 1.1; // 10% boost for recent articles
-        }
-      }
-      
-      return { 
-        ...article, 
-        relevanceScore,
-        timeframeScores,
-        pubDate // Keep the parsed date for further processing
-      };
+      return { ...article, relevanceScore };
     });
     
     // Filter out low relevance articles
@@ -658,7 +517,7 @@ class NewsService {
       .filter(article => article.relevanceScore > 15) // Keep only articles with significant relevance
       .sort((a, b) => b.relevanceScore - a.relevanceScore); // Sort by relevance score
     
-    // Group articles by timeframe to ensure we have sufficient coverage for each period
+    // Group articles by timeframe
     const timeframeGroups = {
       '7days': [],
       '1month': [],
@@ -666,34 +525,54 @@ class NewsService {
       '6months': []
     };
     
-    // Assign each article to the timeframe(s) where it has the highest score
-    // An article can belong to multiple timeframes if it's relevant to multiple periods
+    // Categorize articles into timeframes based on content and publication date
     for (const article of relevantArticles) {
-      const scores = article.timeframeScores || {};
+      const text = (article.title + ' ' + article.description).toLowerCase();
+      const pubDate = article.publishedDate || new Date(article.publishedAt);
       
-      // Find the highest score
-      const maxScore = Math.max(...Object.values(scores));
+      // Check for timeframe-specific keywords
+      const hasShortTermTerms = /(next week|this week|days ahead|immediate|short term)/i.test(text);
+      const hasMonthTerms = /(next month|this month|monthly|coming weeks)/i.test(text);
+      const hasQuarterTerms = /(quarter|quarterly|q1|q2|q3|q4|months)/i.test(text);
+      const hasLongTermTerms = /(long term|year|yearly|annual|future|roadmap|outlook|strategic)/i.test(text);
       
-      // Assign to all timeframes where the score is at least 90% of the max
-      for (const [timeframe, score] of Object.entries(scores)) {
-        if (score >= maxScore * 0.9) {
-          timeframeGroups[timeframe].push({
-            ...article,
-            timeframeScore: score
-          });
-        }
+      // Categorize based on content and publication date
+      if (hasShortTermTerms || (pubDate > twoWeeksAgo && article.isRecent)) {
+        timeframeGroups['7days'].push(article);
+      }
+      
+      if (hasMonthTerms || (pubDate > oneMonthAgo && !hasShortTermTerms)) {
+        timeframeGroups['1month'].push(article);
+      }
+      
+      if (hasQuarterTerms || (pubDate > threeMonthsAgo && !hasMonthTerms)) {
+        timeframeGroups['3months'].push(article);
+      }
+      
+      if (hasLongTermTerms || (pubDate > sixMonthsAgo && !hasQuarterTerms)) {
+        timeframeGroups['6months'].push(article);
       }
     }
     
-    // Sort each timeframe group by its specific score
+    // Remove duplicates from each timeframe group
     for (const timeframe in timeframeGroups) {
-      timeframeGroups[timeframe].sort((a, b) => b.timeframeScore - a.timeframeScore);
+      const uniqueArticles = [];
+      const titles = new Set();
+      
+      for (const article of timeframeGroups[timeframe]) {
+        if (!titles.has(article.title)) {
+          titles.add(article.title);
+          uniqueArticles.push(article);
+        }
+      }
+      
+      timeframeGroups[timeframe] = uniqueArticles;
     }
     
     console.log(`Timeframe coverage: 7 days: ${timeframeGroups['7days'].length}, 1 month: ${timeframeGroups['1month'].length}, 3 months: ${timeframeGroups['3months'].length}, 6 months: ${timeframeGroups['6months'].length}`);
     
-    // Return the merged list, preserving the overall relevance ordering
-    return relevantArticles;
+    // Return the articles organized by timeframe
+    return timeframeGroups;
   }
 
   checkForFutureTerms(text) {
