@@ -390,14 +390,15 @@ Consider these factors:
 5. Investor interest
 6. Recent market activity
 
-IMPORTANT: You must respond with ONLY a JSON object in the following format, with no additional text or explanation:
-{
-  "stocks": ["AAPL", "MSFT", "GOOGL"]
-}
+IMPORTANT: You must respond with ONLY a JSON object in the following format:
+{"stocks":["AAPL","MSFT","GOOGL"]}
 
-The response must be valid JSON and contain only uppercase stock symbols.
-Each symbol must be a valid trading symbol (1-5 letters).
-Do not include any explanations, notes, or additional text.`
+Rules:
+1. The response must be a single line
+2. No newlines or formatting
+3. No explanations or additional text
+4. Only include valid stock symbols (1-5 uppercase letters)
+5. The response must be valid JSON that can be parsed by JSON.parse()`
           }
         ],
         temperature: 0.2,
@@ -412,13 +413,21 @@ Do not include any explanations, notes, or additional text.`
       let stocks;
       
       try {
+        // Log the raw content for debugging
+        console.log('Raw OpenAI response:', content);
+        
         // Clean the content string before parsing
         const cleanContent = content
           .trim()
-          .replace(/[\n\r]/g, '') // Remove newlines
-          .replace(/\\/g, '\\\\') // Escape backslashes
-          .replace(/"/g, '\\"')   // Escape quotes
-          .replace(/`/g, '"');    // Replace backticks with quotes
+          // Remove any markdown code block markers
+          .replace(/^```json\s*/, '')
+          .replace(/```$/, '')
+          // Remove any whitespace and newlines
+          .replace(/\s+/g, '')
+          // Ensure it starts with { and ends with }
+          .replace(/^[^{]*({.*})[^}]*$/, '$1');
+        
+        console.log('Cleaned content:', cleanContent);
         
         // Try to parse the cleaned content
         stocks = JSON.parse(cleanContent);
@@ -443,6 +452,10 @@ Do not include any explanations, notes, or additional text.`
         .map(symbol => (symbol || '').toUpperCase().trim())
         .filter(symbol => symbol && symbol.length <= 5 && /^[A-Z]+$/.test(symbol))
         .slice(0, POPULAR_STOCKS_COUNT);
+
+      if (stocks.length === 0) {
+        throw new Error('No valid stock symbols found in OpenAI response');
+      }
 
       console.log(`Retrieved ${stocks.length} popular stocks from OpenAI`);
       return stocks;
