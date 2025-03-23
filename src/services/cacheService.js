@@ -18,7 +18,9 @@ const createPopularSearchesTableQuery = `
 
 // Create the news cache table if it doesn't exist
 const createNewsCacheTableQuery = `
-  CREATE TABLE IF NOT EXISTS news_cache (
+  DROP TABLE IF EXISTS news_cache;
+  
+  CREATE TABLE news_cache (
     id SERIAL PRIMARY KEY,
     symbol VARCHAR(10) NOT NULL,
     data JSONB NOT NULL,
