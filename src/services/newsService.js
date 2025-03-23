@@ -647,15 +647,18 @@ class NewsService {
   async collectAndAnalyzeNews(symbol, maxArticles = 50) {
     try {
       // Get news articles
-      const articles = await this.getGoogleNewsArticles(symbol);
+      const timeframeGroups = await this.getGoogleNewsArticles(symbol);
       
       // Initialize technical data and historical patterns as null
       let technicalData = null;
       let historicalPatterns = null;
       
+      // Combine all articles from all timeframes into a single array
+      const allArticles = Object.values(timeframeGroups).flat();
+      
       // Process each article to get full content if needed
       const processedArticles = await Promise.all(
-        articles.map(async (article) => {
+        allArticles.map(async (article) => {
           return {
             ...article,
             content: article.description, // Use description as content
@@ -667,7 +670,8 @@ class NewsService {
         articles: processedArticles,
         count: processedArticles.length,
         technicalData,
-        historicalPatterns
+        historicalPatterns,
+        timeframeGroups // Include the timeframe groups in the response
       };
     } catch (error) {
       console.error('Error collecting and analyzing news:', error);
