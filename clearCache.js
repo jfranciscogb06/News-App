@@ -2,9 +2,9 @@
  * Clear Cache Utility
  * 
  * This script completely clears all caches in the system, including:
- * - Popular stocks cache (in-memory and MongoDB)
- * - News cache (MongoDB)
- * - Popular searches (MongoDB)
+ * - Popular stocks cache (in-memory and PostgreSQL)
+ * - News cache (PostgreSQL)
+ * - Popular searches (PostgreSQL)
  * - Any other in-memory state
  * 
  * Run with: node clearCache.js

@@ -1,6 +1,6 @@
 const newsService = require('../services/newsService');
 const openaiService = require('../services/openaiService');
-const NewsCache = require('../models/newsCache');
+const cacheService = require('../services/cacheService');
 const sourceValidationService = require('../services/sourceValidationService');
 
 class StockController {
@@ -25,7 +25,7 @@ class StockController {
       console.log(`Processing analysis request for ${normalizedSymbol}`);
       
       // Try to get from cache first
-      const cachedData = await NewsCache.getBySymbol(normalizedSymbol);
+      const cachedData = await cacheService.getStockData(normalizedSymbol);
       
       if (cachedData) {
         console.log(`Returning cached data for ${normalizedSymbol}`);
@@ -74,15 +74,8 @@ class StockController {
         sourceCredibility: sourceCredibilityStats
       };
 
-      // Save to cache with a 30-minute TTL
-      await NewsCache.save(normalizedSymbol, analysis, {
-        sourceCredibility: sourceCredibilityStats,
-        articleCount: count,
-        ttlHours: 0.5
-      });
-      
-      // Clean expired cache entries in the background
-      NewsCache.cleanExpired().catch(err => console.error('Error cleaning cache:', err));
+      // Cache the result
+      await cacheService.cacheStockData(normalizedSymbol);
 
       res.json(result);
     } catch (error) {
@@ -193,15 +186,12 @@ class StockController {
     try {
       console.log('Starting cache clearing process...');
       
-      // Clear the MongoDB news cache
-      const clearCount = await NewsCache.clearAll();
+      // Clear the PostgreSQL cache
+      const success = await cacheService.clearPopularCache();
       
       res.json({
-        success: true,
-        message: 'Cache cleared successfully',
-        details: {
-          entriesRemoved: clearCount
-        }
+        success,
+        message: success ? 'Cache cleared successfully' : 'Failed to clear cache'
       });
       
       console.log('Cache clearing complete');
