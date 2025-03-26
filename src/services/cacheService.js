@@ -1,6 +1,7 @@
 const db = require('../utils/db');
 const newsService = require('./newsService');
 const openaiService = require('./openaiService');
+const sentimentAnalysisService = require('./sentimentAnalysisService');
 
 // Create the popular searches table if it doesn't exist
 const createPopularSearchesTableQuery = `
@@ -335,8 +336,19 @@ class CacheService {
         return;
       }
       
-      // Collect and analyze news
-      const analysis = await newsService.collectAndAnalyzeNews(symbol);
+      // Collect news articles
+      const { articles, count } = await newsService.collectAndAnalyzeNews(symbol);
+      
+      // Analyze sentiment and predict movement
+      const sentimentAnalysis = await sentimentAnalysisService.analyzeSentimentAndPredict(symbol, articles);
+      
+      // Create the complete analysis object
+      const analysis = {
+        articles,
+        count,
+        sentimentAnalysis,
+        timestamp: new Date()
+      };
       
       // Store in memory cache
       popularStocksCache.set(symbol, analysis);

@@ -2,6 +2,7 @@ const newsService = require('../services/newsService');
 const openaiService = require('../services/openaiService');
 const cacheService = require('../services/cacheService');
 const sourceValidationService = require('../services/sourceValidationService');
+const sentimentAnalysisService = require('../services/sentimentAnalysisService');
 
 class StockController {
   /**
@@ -43,15 +44,15 @@ class StockController {
         });
       }
       
-      console.log(`Collected ${count} articles for ${normalizedSymbol}, analyzing...`);
+      console.log(`Collected ${count} articles for ${normalizedSymbol}, analyzing sentiment...`);
       
-      // Use OpenAI to analyze the collected articles
-      const analysis = await openaiService.analyzeArticles(normalizedSymbol, articles);
+      // Use sentiment analysis service to analyze the collected articles
+      const sentimentAnalysis = await sentimentAnalysisService.analyzeSentimentAndPredict(normalizedSymbol, articles);
       
       // Add source validation metadata to the analysis
-      for (const timeframe in analysis) {
-        if (analysis[timeframe] && analysis[timeframe].key_articles) {
-          analysis[timeframe].key_articles = analysis[timeframe].key_articles.map(article => {
+      for (const timeframe in sentimentAnalysis) {
+        if (sentimentAnalysis[timeframe] && sentimentAnalysis[timeframe].key_articles) {
+          sentimentAnalysis[timeframe].key_articles = sentimentAnalysis[timeframe].key_articles.map(article => {
             // Only validate articles that weren't validated during collection
             if (!article.credibilityScore) {
               return sourceValidationService.validateArticleSource(article);
@@ -62,13 +63,13 @@ class StockController {
       }
       
       // Calculate source credibility statistics
-      const sourceCredibilityStats = this.calculateSourceCredibilityStats(analysis);
+      const sourceCredibilityStats = this.calculateSourceCredibilityStats(sentimentAnalysis);
       
       // Create the response object
       const result = {
         symbol: normalizedSymbol,
         timestamp: new Date(),
-        analysis,
+        sentimentAnalysis,
         source: 'fresh',
         articleCount: count,
         sourceCredibility: sourceCredibilityStats

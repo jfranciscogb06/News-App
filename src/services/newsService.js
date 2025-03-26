@@ -6,6 +6,7 @@ const sourceValidationService = require('./sourceValidationService');
 
 class NewsService {
   constructor() {
+    this.maxArticlesPerQuery = 10;
     // No API key needed for direct Google News search
   }
 
@@ -643,15 +644,16 @@ class NewsService {
     }
   }
 
-  // Process all Google News articles obtained from queries
+  /**
+   * Collect news articles for a stock symbol
+   * @param {string} symbol - Stock symbol
+   * @param {number} maxArticles - Maximum number of articles to collect
+   * @returns {Promise<Object>} Collected articles and metadata
+   */
   async collectAndAnalyzeNews(symbol, maxArticles = 50) {
     try {
       // Get news articles
       const timeframeGroups = await this.getGoogleNewsArticles(symbol);
-      
-      // Initialize technical data and historical patterns as null
-      let technicalData = null;
-      let historicalPatterns = null;
       
       // Combine all articles from all timeframes into a single array
       const allArticles = Object.values(timeframeGroups).flat();
@@ -669,12 +671,10 @@ class NewsService {
       return {
         articles: processedArticles,
         count: processedArticles.length,
-        technicalData,
-        historicalPatterns,
         timeframeGroups // Include the timeframe groups in the response
       };
     } catch (error) {
-      console.error('Error collecting and analyzing news:', error);
+      console.error('Error collecting news:', error);
       throw error;
     }
   }
