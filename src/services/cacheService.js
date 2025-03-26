@@ -143,24 +143,38 @@ class CacheService {
       // Calculate delay for this group (stagger by group ID)
       const initialDelay = (groupId - 1) * STAGGER_INTERVAL;
       
+      // Add some randomization to prevent exact timing
+      const randomOffset = Math.floor(Math.random() * 60000); // Random offset up to 1 minute
+      
+      console.log(`Scheduling group ${groupId} to start in ${(initialDelay + randomOffset)/1000} seconds`);
+      
       // Schedule initial caching after the staggered delay
-      const initialTimer = setTimeout(() => {
-        this.refreshCacheGroup(group);
-        
-        // Set up recurring refresh for this group
-        const recurringTimer = setInterval(() => {
-          this.refreshCacheGroup(group);
-        }, CACHE_REFRESH_INTERVAL);
-        
-        // Store the recurring timer reference
-        this.refreshTimers.push(recurringTimer);
-        
-      }, initialDelay);
+      const initialTimer = setTimeout(async () => {
+        try {
+          await this.refreshCacheGroup(group);
+          
+          // Set up recurring refresh for this group
+          const recurringTimer = setInterval(async () => {
+            try {
+              await this.refreshCacheGroup(group);
+            } catch (error) {
+              console.error(`Error in recurring refresh for group ${groupId}:`, error);
+              // Don't stop the interval on error, just log it
+            }
+          }, CACHE_REFRESH_INTERVAL);
+          
+          // Store the recurring timer reference
+          this.refreshTimers.push(recurringTimer);
+          
+        } catch (error) {
+          console.error(`Error in initial refresh for group ${groupId}:`, error);
+          // Retry after a delay if initial refresh fails
+          setTimeout(() => this.refreshCacheGroup(group), 30000);
+        }
+      }, initialDelay + randomOffset);
       
       // Store the initial timer reference
       this.refreshTimers.push(initialTimer);
-      
-      console.log(`Scheduled group ${groupId} to start in ${initialDelay/1000} seconds and refresh every ${CACHE_REFRESH_INTERVAL/60000} minutes`);
     }
   }
 
@@ -189,8 +203,9 @@ class CacheService {
       if (this.activeCachingOperations >= this.maxConcurrentCachingOperations) {
         console.log(`Delaying refresh of group ${group.id} - too many active caching operations`);
         
-        // Retry after a short delay
-        setTimeout(() => this.refreshCacheGroup(group), 30000);
+        // Retry after a short delay with exponential backoff
+        const retryDelay = Math.min(30000 * Math.pow(2, this.activeCachingOperations), 300000); // Max 5 minutes
+        setTimeout(() => this.refreshCacheGroup(group), retryDelay);
         return;
       }
       
@@ -217,6 +232,10 @@ class CacheService {
       
       // Decrement active operations counter even if there was an error
       this.activeCachingOperations--;
+      
+      // Retry after a delay with exponential backoff
+      const retryDelay = Math.min(30000 * Math.pow(2, this.activeCachingOperations), 300000);
+      setTimeout(() => this.refreshCacheGroup(group), retryDelay);
     }
   }
 
@@ -281,20 +300,34 @@ class CacheService {
    * @param {number} groupId - Group ID for staggering
    */
   async processBatchesInParallelForGroup(stocks, concurrency, groupId) {
-    // Create batches
+    // Create batches with additional staggering within groups
     const batches = [];
     for (let i = 0; i < stocks.length; i += concurrency) {
       batches.push(stocks.slice(i, i + concurrency));
     }
     
-    // Process each batch in parallel
-    for (const batch of batches) {
-      console.log(`Processing batch of ${batch.length} stocks for group ${groupId}...`);
+    // Process each batch with additional staggering
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      console.log(`Processing batch ${i + 1}/${batches.length} for group ${groupId}...`);
       
-      // Process all stocks in current batch concurrently
-      await Promise.all(
-        batch.map(symbol => this.cacheStockData(symbol, groupId))
-      );
+      // Add additional delay between batches within the same group
+      if (i > 0) {
+        const batchDelay = (groupId * 1000) + (i * 2000); // Progressive delay based on group and batch
+        console.log(`Waiting ${batchDelay/1000} seconds before processing next batch...`);
+        await new Promise(resolve => setTimeout(resolve, batchDelay));
+      }
+      
+      try {
+        // Process all stocks in current batch concurrently
+        await Promise.all(
+          batch.map(symbol => this.cacheStockData(symbol, groupId))
+        );
+      } catch (error) {
+        console.error(`Error processing batch ${i + 1} for group ${groupId}:`, error);
+        // Continue with next batch even if current one fails
+        continue;
+      }
     }
   }
 
