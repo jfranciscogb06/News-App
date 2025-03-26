@@ -190,7 +190,7 @@ Content: ${article.description || article.content || 'No content available'}
       }).join('\n\n');
 
       const response = await this.openai.chat.completions.create({
-        model: "gpt-4",
+        model: "gpt-4-1106-preview",
         messages: [
           systemMessage,
           {

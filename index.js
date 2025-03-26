@@ -1,7 +1,6 @@
 const express = require('express');
 const config = require('./src/config/config');
-const stockRoutes = require('./src/routes/stockRoutes');
-const cacheRoutes = require('./src/routes/cacheRoutes');
+const routes = require('./src/routes');
 const errorHandler = require('./src/utils/errorHandler');
 const db = require('./src/utils/db');
 const cacheService = require('./src/services/cacheService');
@@ -24,9 +23,8 @@ db.query('SELECT NOW()')
 // Middleware
 app.use(express.json());
 
-// Routes
-app.use('/', stockRoutes);
-app.use('/cache', cacheRoutes);
+// Mount all routes
+app.use('/api', routes);
 
 // Error handler
 app.use(errorHandler);

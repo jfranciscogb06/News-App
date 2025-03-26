@@ -390,7 +390,7 @@ class CacheService {
       console.log('Getting popular stocks from OpenAI...');
       
       const response = await openaiService.openai.chat.completions.create({
-        model: "gpt-4",
+        model: "gpt-4-1106-preview",
         messages: [
           {
             role: "system",
