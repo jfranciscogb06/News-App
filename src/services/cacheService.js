@@ -427,9 +427,7 @@ class CacheService {
         messages: [
           {
             role: "system",
-            content: `You are a financial expert. Your task is to identify the top ${POPULAR_STOCKS_COUNT} most important and frequently traded stocks in the market.
-
-Consider these factors:
+            content: `You are a financial expert identifying popular stocks based on:
 1. Market capitalization
 2. Trading volume
 3. News coverage and media attention
@@ -438,15 +436,22 @@ Consider these factors:
 6. Recent market activity
 
 IMPORTANT: You must respond with ONLY a JSON object containing a single array of stock symbols.
-Example format: {"stocks":["AAPL","MSFT","GOOGL"]}
+The response must be valid JSON that can be parsed by JSON.parse().
+
+Example format:
+{"stocks":["AAPL","MSFT","GOOGL"]}
 
 Rules:
 1. Response must be a single line of valid JSON
 2. No newlines, formatting, or markdown
 3. No explanations or additional text
 4. Only include valid stock symbols (1-5 uppercase letters)
-5. The response must be parseable by JSON.parse()
-6. Do not include any backticks or code block markers`
+5. All keys must be quoted (e.g., "stocks" not stocks)
+6. No trailing commas
+7. No comments or code block markers
+8. No special characters or Unicode
+9. Must start with { and end with }
+10. Must contain exactly one key "stocks" with an array value`
           }
         ],
         temperature: 0.2,
@@ -474,13 +479,34 @@ Rules:
           .replace(/\s+/g, '')
           // Remove any backticks
           .replace(/`/g, '')
+          // Remove any invalid characters
+          .replace(/[^\x20-\x7E]/g, '')
           // Ensure it starts with { and ends with }
-          .replace(/^[^{]*({.*})[^}]*$/, '$1');
+          .replace(/^[^{]*({.*})[^}]*$/, '$1')
+          // Fix common JSON formatting issues
+          .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3') // Add quotes around unquoted keys
+          .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3') // Run twice to catch nested objects
+          .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3') // Run three times to be thorough
+          .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3') // Run four times to be extra thorough
+          .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3'); // Run five times to be very thorough
         
         console.log('Cleaned content:', cleanContent);
         
         // Try to parse the cleaned content
-        stocks = JSON.parse(cleanContent);
+        try {
+          stocks = JSON.parse(cleanContent);
+        } catch (parseError) {
+          console.error('Initial JSON parse failed:', parseError);
+          // Try to fix common JSON issues
+          const fixedContent = cleanContent
+            .replace(/,(\s*[}\]])/g, '$1') // Remove trailing commas
+            .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3') // Add quotes around unquoted keys
+            .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3') // Run twice to catch nested objects
+            .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3'); // Run three times to be thorough
+          
+          console.log('Fixed content:', fixedContent);
+          stocks = JSON.parse(fixedContent);
+        }
         
         // Validate the response structure
         if (!stocks || typeof stocks !== 'object') {
