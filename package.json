@@ -16,7 +16,8 @@
     "googleapis": "^128.0.0",
     "newsapi": "^2.4.1",
     "openai": "^4.86.1",
-    "pg": "^8.14.0"
+    "pg": "^8.14.0",
+    "serpapi": "^2.1.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

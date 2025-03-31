@@ -13,7 +13,7 @@ module.exports = {
     searchEngineId: process.env.GOOGLE_SEARCH_ENGINE_ID || '' // Optional for now
   },
   serpapi: {
-    apiKey: process.env.SERPAPI_API_KEY
+    apiKey: process.env.SERPAPI_API_KEY || '4eec45a26530daedf7c8bdd7c46c114550845dc197447bd880a507ec334103bd'
   },
   database: {
     url: process.env.DATABASE_URL

@@ -76,68 +76,113 @@ class SourceValidationService {
       'opinion', 'editorial', 'commentary', 'perspective', 'viewpoint',
       'analysis', 'our take', 'we believe', 'we think', 'in our view'
     ];
+
+    this.sourceCache = new Map();
+    this.biasCache = new Map();
   }
 
   /**
-   * Evaluate an article's source for reliability
-   * @param {Object} article - The article to validate
-   * @returns {Object} The article with added credibility metrics
+   * Validate article source with caching
+   * @param {Object} article - Article to validate
+   * @returns {Object} Validated article with credibility metadata
    */
-  validateArticleSource(article) {
-    if (!article || !article.url) {
-      return { ...article, biasAssessment: 'unknown' };
+  async validateArticleSource(article) {
+    try {
+      // Check cache first
+      const cacheKey = article.url || article.source;
+      if (this.sourceCache.has(cacheKey)) {
+        return {
+          ...article,
+          ...this.sourceCache.get(cacheKey)
+        };
+      }
+
+      // Extract domain for validation
+      const domain = this.extractDomain(article.url || article.source);
+      if (!domain) {
+        return article;
+      }
+
+      // Validate source in parallel with bias assessment
+      const [credibilityResult, biasResult] = await Promise.all([
+        this.validateSource(domain),
+        this.assessContentBias(article)
+      ]);
+
+      // Combine results
+      const validationResult = {
+        credibilityScore: credibilityResult,
+        biasAssessment: biasResult,
+        isOpinionContent: this.isOpinionContent(article)
+      };
+
+      // Cache the result
+      this.sourceCache.set(cacheKey, validationResult);
+
+      return {
+        ...article,
+        ...validationResult
+      };
+    } catch (error) {
+      console.error('Error validating article source:', error);
+      return article;
     }
-    
-    // Extract domain from URL
-    const domain = this.extractDomain(article.url);
-    
-    // Check domain against known source database
-    const sourceInfo = this.getSourceInfo(domain);
-    
-    // Check for bias indicators in content
-    const biasAssessment = this.assessContentBias(article);
-    
-    // Generate a credibility score
-    const credibilityScore = this.calculateCredibilityScore(sourceInfo, biasAssessment);
-    
-    // Return article with added credibility information, but remove unknown values
-    return {
-      ...article,
-      biasAssessment,
-      credibilityScore,
-      isOpinionContent: this.isLikelyOpinion(article)
-    };
   }
-  
+
   /**
-   * Extract domain from URL
-   * @param {string} url - URL to extract domain from
-   * @returns {string} Domain name
+   * Validate multiple articles in parallel
+   * @param {Array} articles - Articles to validate
+   * @returns {Promise<Array>} Validated articles
+   */
+  async validateArticles(articles) {
+    return Promise.all(
+      articles.map(article => this.validateArticleSource(article))
+    );
+  }
+
+  /**
+   * Clear the source validation cache
+   */
+  clearCache() {
+    this.sourceCache.clear();
+    this.biasCache.clear();
+  }
+
+  /**
+   * Extract domain from URL or source string
+   * @param {string} url - URL or source string
+   * @returns {string|null} Domain or null if invalid
    */
   extractDomain(url) {
     try {
-      // Handle if URL already starts with a domain
-      if (!url.startsWith('http')) {
-        url = 'https://' + url;
-      }
-      
-      const hostname = new URL(url).hostname;
-      // Extract the base domain (e.g., get wsj.com from www.wsj.com)
-      const parts = hostname.split('.');
-      const tld = parts[parts.length - 1];
-      const domain = parts[parts.length - 2];
-      
-      // Special case for co.uk and similar
-      if (parts.length > 2 && tld.length === 2 && domain === 'co') {
-        return `${parts[parts.length - 3]}.${domain}.${tld}`;
-      }
-      
-      return `${domain}.${tld}`;
+      if (!url) return null;
+      const domain = new URL(url).hostname;
+      return domain.replace(/^www\./, '');
     } catch (error) {
-      return url; // Return original URL if parsing fails
+      return null;
     }
   }
-  
+
+  /**
+   * Check if content is an opinion piece
+   * @param {Object} article - Article to check
+   * @returns {boolean} Whether content is an opinion piece
+   */
+  isOpinionContent(article) {
+    const text = (article.title + ' ' + article.description).toLowerCase();
+    const opinionTerms = [
+      'opinion',
+      'editorial',
+      'commentary',
+      'analysis',
+      'viewpoint',
+      'perspective',
+      'op-ed',
+      'guest column'
+    ];
+    return opinionTerms.some(term => text.includes(term));
+  }
+
   /**
    * Get source reliability information
    * @param {string} domain - Domain to lookup
@@ -205,18 +250,6 @@ class SourceValidationService {
       rightBiasTerms,
       sensationalismTerms
     };
-  }
-  
-  /**
-   * Check if content is likely an opinion piece rather than factual reporting
-   * @param {Object} article - Article to analyze
-   * @returns {boolean} Whether it's likely opinion content
-   */
-  isLikelyOpinion(article) {
-    const text = (article.title + ' ' + (article.description || article.content || '')).toLowerCase();
-    
-    // Check for opinion indicators
-    return this.opinionIndicators.some(term => text.includes(term));
   }
   
   /**

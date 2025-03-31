@@ -14,25 +14,39 @@ class SentimentAnalysisService {
    */
   async analyzeSentimentAndPredict(symbol, articles) {
     try {
-      console.log(`Starting sentiment analysis and prediction for ${symbol} with ${articles.length} articles`);
-      
+      // Early filtering of low-quality articles
+      const filteredArticles = articles.filter(article => {
+        const text = (article.title + ' ' + article.description).toLowerCase();
+        return !text.includes('sponsored') && 
+               !text.includes('advertisement') && 
+               text.length > 50;
+      });
+
+      // Score articles by informational value in parallel
+      const scoredArticles = await Promise.all(
+        filteredArticles.map(async article => {
+          const score = this.scoreArticle(article);
+          return { ...article, informationalScore: score };
+        })
+      );
+
+      // Sort articles by score and take top 50 for analysis
+      const topArticles = scoredArticles
+        .sort((a, b) => b.informationalScore - a.informationalScore)
+        .slice(0, 50);
+
       // Organize articles by timeframe relevance
-      const timeframeArticles = this.organizeArticlesByTimeframe(articles);
+      const timeframeArticles = this.organizeArticlesByTimeframe(topArticles);
       
-      // Process each timeframe separately
-      const analysis = {};
+      // Process each timeframe separately in parallel
       const timeframes = ['7days', '1month', '3months', '6months'];
-      
-      // Create promises for all timeframes to process in parallel
       const timeframePromises = timeframes.map(async timeframe => {
         const relevantArticles = timeframeArticles[timeframe];
         let timeframeAnalysis;
         
         if (relevantArticles.length === 0) {
-          console.log(`No articles found for timeframe: ${timeframe}, using general articles`);
-          timeframeAnalysis = await this.analyzeSingleTimeframe(symbol, timeframe, articles.slice(0, 20));
+          timeframeAnalysis = await this.analyzeSingleTimeframe(symbol, timeframe, topArticles.slice(0, 20));
         } else {
-          console.log(`Analyzing ${timeframe} with ${relevantArticles.length} relevant articles`);
           timeframeAnalysis = await this.analyzeSingleTimeframe(symbol, timeframe, relevantArticles);
         }
         
@@ -43,13 +57,14 @@ class SentimentAnalysisService {
       const results = await Promise.all(timeframePromises);
       
       // Combine results into the analysis object
+      const analysis = {};
       for (const result of results) {
         analysis[result.timeframe] = result.analysis;
       }
       
       return analysis;
     } catch (error) {
-      console.error('Error in sentiment analysis:', error);
+      console.error('Sentiment analysis error:', error.message);
       throw error;
     }
   }
@@ -214,7 +229,7 @@ Content: ${article.description || article.content || 'No content available'}
       
       return result;
     } catch (error) {
-      console.error(`Error analyzing timeframe ${timeframe}:`, error);
+      console.error(`Timeframe analysis error (${timeframe}):`, error.message);
       return this.getFallbackAnalysis(timeframe);
     }
   }
@@ -237,7 +252,7 @@ Content: ${article.description || article.content || 'No content available'}
 
       return JSON.parse(cleanContent);
     } catch (error) {
-      console.error('Error parsing OpenAI response:', error);
+      console.error('OpenAI response parsing error:', error.message);
       throw new Error('Invalid response format from OpenAI');
     }
   }
@@ -295,6 +310,46 @@ Content: ${article.description || article.content || 'No content available'}
       key_articles: [],
       risks: ["Insufficient data for risk assessment"]
     };
+  }
+
+  /**
+   * Score an article based on its informational value
+   * @param {Object} article - Article to score
+   * @returns {number} Score from 0-100
+   */
+  scoreArticle(article) {
+    let score = 0;
+    const text = (article.title + ' ' + article.description).toLowerCase();
+
+    // Source credibility (up to 20 points)
+    if (article.credibilityScore) {
+      score += article.credibilityScore.score;
+    }
+
+    // Content quality (up to 20 points)
+    if (text.length > 500) score += 20;
+    else if (text.length > 300) score += 15;
+    else if (text.length > 100) score += 10;
+
+    // Expert opinions (up to 15 points)
+    const hasExpertQuotes = /(said|stated|reported|announced|confirmed|revealed)/i.test(text);
+    const hasExpertSources = /(analyst|expert|researcher|economist|strategist|manager|ceo)/i.test(text);
+    if (hasExpertQuotes && hasExpertSources) score += 15;
+    else if (hasExpertQuotes || hasExpertSources) score += 8;
+
+    // Market impact (up to 15 points)
+    if (text.includes('market impact') || text.includes('stock price') || text.includes('trading')) {
+      score += 15;
+    }
+
+    // Future outlook (up to 15 points)
+    if (article.hasFutureTerms) score += 15;
+    else if (text.includes('forecast') || text.includes('outlook')) score += 8;
+
+    // Data points (up to 15 points)
+    if (/\d+%/.test(text) || /\$[\d,]+/.test(text)) score += 15;
+
+    return Math.min(100, score);
   }
 }
 

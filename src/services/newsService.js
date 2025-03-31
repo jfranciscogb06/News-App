@@ -168,7 +168,7 @@ class NewsService {
         });
       }
     } catch (error) {
-      console.error(`Error scraping date from ${url}:`, error);
+      console.error(`Date scraping error for ${url}:`, error.message);
       return new Date().toLocaleDateString('en-US', {
         weekday: 'long',
         year: 'numeric',
@@ -178,419 +178,109 @@ class NewsService {
     }
   }
 
-  async getGoogleNewsArticles(symbol) {
+  async getGoogleNewsArticles(query, maxArticles = 5) {
     try {
-      console.log('Fetching Google news articles...');
-      
-      // Define search queries for different types of news with timeframe context
-      const queries = [
-        // Short-term (7-day) focused queries
-        { query: `${symbol} stock price movement this week`, timeframe: '7days' },
-        { query: `${symbol} stock recent news`, timeframe: '7days' },
-        { query: `${symbol} stock price target update`, timeframe: '7days' },
-        { query: `${symbol} earnings this week`, timeframe: '7days' },
-        { query: `${symbol} short term outlook`, timeframe: '7days' },
-        
-        // Medium-term (1-month) focused queries
-        { query: `${symbol} stock monthly outlook`, timeframe: '1month' },
-        { query: `${symbol} upcoming product release`, timeframe: '1month' },
-        { query: `${symbol} next earnings date`, timeframe: '1month' },
-        { query: `${symbol} stock monthly forecast`, timeframe: '1month' },
-        
-        // 3-month focused queries
-        { query: `${symbol} quarterly outlook`, timeframe: '3months' },
-        { query: `${symbol} quarterly forecast`, timeframe: '3months' },
-        { query: `${symbol} revenue projections`, timeframe: '3months' },
-        { query: `${symbol} business expansion plans`, timeframe: '3months' },
-        
-        // Long-term (6-month) focused queries
-        { query: `${symbol} long term forecast`, timeframe: '6months' },
-        { query: `${symbol} strategic plans`, timeframe: '6months' },
-        { query: `${symbol} market position`, timeframe: '6months' },
-        { query: `${symbol} industry trends`, timeframe: '6months' },
-        { query: `${symbol} competition analysis`, timeframe: '6months' },
-        
-        // General queries (might apply to any timeframe)
-        { query: `${symbol} stock news analysis`, timeframe: 'general' },
-        { query: `${symbol} stock forecast future`, timeframe: 'general' },
-        { query: `${symbol} analyst rating upgrade downgrade`, timeframe: 'general' },
-        { query: `${symbol} earnings report`, timeframe: 'general' },
-        { query: `${symbol} market trend`, timeframe: 'general' },
-        { query: `${symbol} CEO interview announcement`, timeframe: 'general' },
-        { query: `${symbol} merger acquisition partnership`, timeframe: 'general' }
-      ];
-      
-      // Get dates for the query date range (last 12 months)
-      const today = new Date();
-      const oneYearAgo = new Date(today);
-      oneYearAgo.setFullYear(today.getFullYear() - 1);
-      
-      // Format dates for Google News query: YYYY-MM-DD
-      const afterDate = oneYearAgo.toISOString().split('T')[0];
-      const beforeDate = today.toISOString().split('T')[0];
-      const dateRangeParam = `&after=${afterDate}&before=${beforeDate}`;
-      
-      // Execute all queries in parallel
-      const searchResults = await Promise.all(
-        queries.map(async (queryObj) => {
-          try {
-            // Use direct Google search with cheerio scraping
-            const encodedQuery = encodeURIComponent(queryObj.query);
-            const url = `https://news.google.com/rss/search?q=${encodedQuery}${dateRangeParam}&hl=en-US&gl=US&ceid=US:en`;
-            
-            const response = await axios.get(url);
-            const $ = cheerio.load(response.data, { xmlMode: true });
-            
-            const articles = [];
-            $('item').each((i, item) => {
-              const $item = $(item);
-              const title = $item.find('title').text();
-              const link = $item.find('link').text();
-              const pubDate = $item.find('pubDate').text();
-              const description = $item.find('description').text();
-              const source = $item.find('source').text() || 'Google News';
-              // Extract any additional fields available
-              const guid = $item.find('guid').text();
-              const categories = [];
-              $item.find('category').each((i, cat) => categories.push($(cat).text()));
-              
-              if (title && link) {
-                articles.push({
-                  title,
-                  link,
-                  pubDate,
-                  description,
-                  source,
-                  guid: guid || link,
-                  categories: categories.length > 0 ? categories : [],
-                  queryContext: queryObj.query,
-                  timeframeHint: queryObj.timeframe // Tag the article with timeframe hint
-                });
-              }
-            });
-            
-            return articles;
-          } catch (error) {
-            console.error(`Error in Google News search for query "${queryObj.query}":`, error.message);
-            return [];
-          }
-        })
-      );
-      
-      // Flatten the results and transform to a common format
-      const uniqueUrls = new Set();
-      const articles = searchResults
-        .flat()
-        .filter(item => {
-          if (!item || !item.link || uniqueUrls.has(item.link)) return false;
-          uniqueUrls.add(item.link);
-          return true;
-        })
-        .map(item => {
-          // Parse date if available, otherwise use current date
-          let publishedDate;
-          try {
-            if (item.pubDate) {
-              publishedDate = new Date(item.pubDate);
-              if (isNaN(publishedDate.getTime())) {
-                publishedDate = new Date();
-              }
-            } else {
-              publishedDate = new Date();
-            }
-          } catch (e) {
-            publishedDate = new Date();
-          }
-          
-          // Format the published date as a string
-          const publishedAtStr = publishedDate.toLocaleDateString('en-US', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
-          });
-          
-          // Calculate recency and assign appropriate timeframe relevance
-          const daysSincePublished = Math.floor((new Date() - publishedDate) / (1000 * 60 * 60 * 24));
-          
-          // Extract text from HTML description
-          let cleanDescription = '';
-          try {
-            const $ = cheerio.load(item.description);
-            cleanDescription = $('body').text();
-          } catch (e) {
-            cleanDescription = item.description || '';
-          }
-          
-          return {
-            title: item.title || '',
-            description: cleanDescription,
-            url: item.link,
-            publishedAt: publishedAtStr,
-            publishedDate: publishedDate, // Keep the date object for sorting
-            pubDate: item.pubDate, // Preserve original date string
-            source: item.source || 'Google News',
-            provider: 'Google News',
-            content: cleanDescription,
-            isRecent: (daysSincePublished < 7),
-            daysSincePublished,
-            hasFutureTerms: this.checkForFutureTerms(item.title + ' ' + (cleanDescription || '')),
-            categories: item.categories || [],
-            queryContext: item.queryContext || 'general',
-            timeframeHint: item.timeframeHint || 'general', // Preserve the timeframe hint
-            timeframeRelevance: this.assessTimeframeRelevance(
-              publishedDate, 
-              item.title + ' ' + cleanDescription, 
-              item.timeframeHint,
-              this.calculateTimeframeRecency(publishedDate)
-            ),
-            relevanceScore: 0 // Will be updated during filtering
-          };
-        })
-        // Sort by date (most recent first) and then by relevance within each date
-        .sort((a, b) => b.publishedDate - a.publishedDate);
+      const response = await axios.get('https://serpapi.com/search.json', {
+        params: {
+          q: query,
+          engine: 'google',
+          google_domain: 'google.com',
+          gl: 'us',
+          hl: 'en',
+          tbm: 'nws',
+          num: maxArticles * 2,
+          api_key: config.serpapi.apiKey
+        }
+      });
 
-      console.log(`Found ${articles.length} Google news articles`);
-      
-      // Apply automatic filtering based on relevance criteria
-      const filteredArticles = this.filterArticlesByKeywords(symbol, articles);
-      console.log(`Filtered to ${filteredArticles.length} relevant articles using keyword matching`);
-      
-      return filteredArticles;
+      if (!response.data?.news_results) {
+        return [];
+      }
+
+      // Filter and process articles
+      const processedArticles = response.data.news_results
+        .filter(article => {
+          const text = `${article.title} ${article.snippet || ''}`.toLowerCase();
+          const symbol = query.split(' ')[0].toUpperCase();
+          const companyName = 'Apple';
+          
+          const hasSymbol = text.includes(symbol.toLowerCase()) || 
+                           text.includes(`$${symbol.toLowerCase()}`);
+          const hasCompanyName = text.toLowerCase().includes(companyName.toLowerCase());
+          
+          return (
+            (hasSymbol || hasCompanyName) &&
+            article.title &&
+            article.link &&
+            article.date &&
+            !article.link.includes('youtube.com') &&
+            !article.link.includes('facebook.com') &&
+            !article.link.includes('twitter.com')
+          );
+        })
+        .map(article => ({
+          title: article.title,
+          description: article.snippet,
+          url: article.link,
+          publishedAt: article.date,
+          source: article.source,
+          content: article.snippet,
+          relevanceScore: this.calculateRelevanceScore(article, query.split(' ')[0])
+        }))
+        .slice(0, maxArticles);
+
+      return processedArticles;
     } catch (error) {
-      console.error('Error fetching Google news articles:', error);
+      console.error('SerpAPI error:', error.message);
       return [];
     }
   }
 
-  filterArticlesByKeywords(symbol, articles) {
-    // Define relevance keywords and their weights
-    const relevanceKeywords = {
-      // Stock symbol itself is highest priority
-      [symbol.toLowerCase()]: 10,
-      
-      // Stock market terms
-      'stock': 5, 
-      'price': 5, 
-      'shares': 4, 
-      'market': 3, 
-      'trading': 3,
-      
-      // Financial performance
-      'earnings': 6, 
-      'revenue': 6, 
-      'profit': 5, 
-      'growth': 4,
-      'loss': 5,
-      'margin': 4,
-      
-      // Future outlook
-      'forecast': 7, 
-      'prediction': 7, 
-      'outlook': 7, 
-      'guidance': 7,
-      'future': 6, 
-      'upcoming': 6, 
-      'planned': 6, 
-      'expected': 5,
-      
-      // Product/business development
-      'launch': 6, 
-      'release': 6, 
-      'announce': 5, 
-      'unveil': 5,
-      'new product': 6, 
-      'technology': 4, 
-      'innovation': 5,
-      
-      // Corporate actions
-      'partnership': 7, 
-      'acquisition': 8, 
-      'merger': 8,
-      'spinoff': 8,
-      'restructuring': 7,
-      'layoffs': 6,
-      
-      // Reporting
-      'quarterly': 5, 
-      'annual': 5, 
-      'report': 4,
-      'fiscal': 4,
-      'results': 5,
-      
-      // Leadership and management
-      'ceo': 6, 
-      'executive': 5, 
-      'management': 4,
-      'leadership': 5,
-      'board': 4,
-      
-      // Market sentiment
-      'investor': 4, 
-      'shareholder': 4, 
-      'analyst': 5,
-      'rating': 6, 
-      'upgrade': 7, 
-      'downgrade': 7, 
-      'target': 6,
-      'recommendation': 6,
-      'buy': 5,
-      'sell': 5,
-      'hold': 4,
-      
-      // Negative factors
-      'investigation': 7,
-      'lawsuit': 7,
-      'litigation': 7,
-      'scandal': 8,
-      'recall': 7,
-      'fine': 6,
-      'regulatory': 5,
-      'compliance': 4
-    };
+  calculateRelevanceScore(article, symbol) {
+    let score = 0;
+    const text = `${article.title} ${article.description || ''} ${article.content || ''}`.toLowerCase();
     
-    // Essential keywords - at least one must be present
-    const essentialKeywords = [symbol.toLowerCase(), 'stock', 'share', 'price', 'market', 'trading', 'earnings'];
+    // Title relevance
+    if (article.title.toLowerCase().includes(symbol.toLowerCase())) score += 2;
     
-    // Define date thresholds for different timeframes
-    const now = new Date();
-    const twoWeeksAgo = new Date(now);
-    twoWeeksAgo.setDate(now.getDate() - 14);
-    const oneMonthAgo = new Date(now);
-    oneMonthAgo.setMonth(now.getMonth() - 1);
-    const threeMonthsAgo = new Date(now);
-    threeMonthsAgo.setMonth(now.getMonth() - 3);
-    const sixMonthsAgo = new Date(now);
-    sixMonthsAgo.setMonth(now.getMonth() - 6);
+    // Content relevance
+    const symbolCount = (text.match(new RegExp(symbol.toLowerCase(), 'g')) || []).length;
+    score += Math.min(symbolCount, 3); // Cap at 3 for multiple mentions
     
-    // Process articles and calculate relevance scores
-    const scoredArticles = articles.map(article => {
-      const combinedText = (article.title + ' ' + article.description).toLowerCase();
-      
-      // Article must contain the stock symbol to be considered
-      if (!combinedText.includes(symbol.toLowerCase())) {
-        return { ...article, relevanceScore: 0 };
-      }
-      
-      // At least one essential keyword must be present
-      const hasEssentialKeyword = essentialKeywords.some(word => combinedText.includes(word));
-      if (!hasEssentialKeyword) {
-        return { ...article, relevanceScore: 0 };
-      }
-      
-      // Calculate relevance score based on keyword matches and weights
-      let relevanceScore = 0;
-      for (const [keyword, weight] of Object.entries(relevanceKeywords)) {
-        if (combinedText.includes(keyword)) {
-          relevanceScore += weight;
-          
-          // Bonus points for keywords in the title (more prominent)
-          if (article.title.toLowerCase().includes(keyword)) {
-            relevanceScore += weight * 0.5; // 50% bonus for title matches
-          }
-        }
-      }
-      
-      // Boost score for recent articles
-      if (article.isRecent) {
-        relevanceScore *= 1.25; // 25% boost for recent articles
-      }
-      
-      // Boost score for articles with future terms
-      if (article.hasFutureTerms) {
-        relevanceScore *= 1.5; // 50% boost for articles mentioning future events
-      }
-      
-      // Apply query context boosts
-      if (article.queryContext) {
-        // Articles from more specific queries get higher scores
-        if (article.queryContext.includes('earnings')) relevanceScore *= 1.3;
-        if (article.queryContext.includes('forecast') || article.queryContext.includes('future')) relevanceScore *= 1.3;
-        if (article.queryContext.includes('analyst')) relevanceScore *= 1.2;
-        if (article.queryContext.includes('merger') || article.queryContext.includes('acquisition')) relevanceScore *= 1.3;
-      }
-      
-      return { ...article, relevanceScore };
-    });
+    // Source credibility
+    if (this.isCredibleSource(article.source)) score += 1;
     
-    // Filter out low relevance articles
-    const relevantArticles = scoredArticles
-      .filter(article => article.relevanceScore > 15) // Keep only articles with significant relevance
-      .sort((a, b) => b.relevanceScore - a.relevanceScore); // Sort by relevance score
+    // Recency bonus
+    const daysOld = (new Date() - new Date(article.publishedAt)) / (1000 * 60 * 60 * 24);
+    if (daysOld < 1) score += 2;
+    else if (daysOld < 7) score += 1;
     
-    // Group articles by timeframe
-    const timeframeGroups = {
-      '7days': [],
-      '1month': [],
-      '3months': [],
-      '6months': []
-    };
-    
-    // Categorize articles into timeframes based on content and publication date
-    for (const article of relevantArticles) {
-      const text = (article.title + ' ' + article.description).toLowerCase();
-      const pubDate = article.publishedDate || new Date(article.publishedAt);
-      
-      // Check for timeframe-specific keywords
-      const hasShortTermTerms = /(next week|this week|days ahead|immediate|short term)/i.test(text);
-      const hasMonthTerms = /(next month|this month|monthly|coming weeks)/i.test(text);
-      const hasQuarterTerms = /(quarter|quarterly|q1|q2|q3|q4|months)/i.test(text);
-      const hasLongTermTerms = /(long term|year|yearly|annual|future|roadmap|outlook|strategic)/i.test(text);
-      
-      // Categorize based on content and publication date
-      if (hasShortTermTerms || (pubDate > twoWeeksAgo && article.isRecent)) {
-        timeframeGroups['7days'].push(article);
-      }
-      
-      if (hasMonthTerms || (pubDate > oneMonthAgo && !hasShortTermTerms)) {
-        timeframeGroups['1month'].push(article);
-      }
-      
-      if (hasQuarterTerms || (pubDate > threeMonthsAgo && !hasMonthTerms)) {
-        timeframeGroups['3months'].push(article);
-      }
-      
-      if (hasLongTermTerms || (pubDate > sixMonthsAgo && !hasQuarterTerms)) {
-        timeframeGroups['6months'].push(article);
-      }
-    }
-    
-    // Remove duplicates from each timeframe group
-    for (const timeframe in timeframeGroups) {
-      const uniqueArticles = [];
-      const titles = new Set();
-      
-      for (const article of timeframeGroups[timeframe]) {
-        if (!titles.has(article.title)) {
-          titles.add(article.title);
-          uniqueArticles.push(article);
-        }
-      }
-      
-      timeframeGroups[timeframe] = uniqueArticles;
-    }
-    
-    console.log(`Timeframe coverage: 7 days: ${timeframeGroups['7days'].length}, 1 month: ${timeframeGroups['1month'].length}, 3 months: ${timeframeGroups['3months'].length}, 6 months: ${timeframeGroups['6months'].length}`);
-    
-    // Return the articles organized by timeframe
-    return timeframeGroups;
+    return score;
   }
 
-  checkForFutureTerms(text) {
-    const futureTerms = [
-      'will', 'future', 'upcoming', 'planned', 'expected', 'forecast',
-      'launch', 'release', 'announce', 'roadmap', 'guidance', 'outlook',
-      'anticipate', 'predict', 'projection', 'estimate', 'target',
-      'next quarter', 'next year', 'pipeline', 'development', 'beta',
-      'prototype', 'testing', 'trial'
+  isCredibleSource(source) {
+    const credibleSources = [
+      'reuters', 'bloomberg', 'cnbc', 'yahoo finance', 'marketwatch',
+      'financial times', 'wall street journal', 'forbes', 'business insider'
     ];
-    const lowerText = text.toLowerCase();
-    return futureTerms.some(term => lowerText.includes(term));
+    
+    return credibleSources.some(credible => 
+      source.toLowerCase().includes(credible)
+    );
+  }
+
+  deduplicateArticles(articles) {
+    const seen = new Set();
+    return articles.filter(article => {
+      const key = article.url;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   async getArticleDetails(url, article) {
     try {
-      // Try to scrape the content directly
       const response = await axios.get(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -639,7 +329,7 @@ class NewsService {
         publishedAt: date || article.publishedAt
       };
     } catch (error) {
-      console.error('Error fetching article details:', error);
+      console.error('Article details error:', error.message);
       return article;
     }
   }
@@ -650,35 +340,72 @@ class NewsService {
    * @param {number} maxArticles - Maximum number of articles to collect
    * @returns {Promise<Object>} Collected articles and metadata
    */
-  async collectAndAnalyzeNews(symbol, maxArticles = 50) {
+  async collectAndAnalyzeNews(symbol, maxArticles = 20) {
     try {
-      // Get news articles
-      const timeframeGroups = await this.getGoogleNewsArticles(symbol);
-      
-      // Combine all articles from all timeframes into a single array
-      const allArticles = Object.values(timeframeGroups).flat();
-      
-      // Process each article to get full content if needed
-      const processedArticles = await Promise.all(
-        allArticles.map(async (article) => {
-          return {
-            ...article,
-            content: article.description, // Use description as content
-          };
-        })
+      const searchQueries = [
+        `${symbol} stock news`,
+        `${symbol} company news`,
+        `${symbol} financial news`,
+        `${symbol} market news`
+      ];
+
+      const queryPromises = searchQueries.map(query => 
+        this.getGoogleNewsArticles(query, Math.ceil(maxArticles / searchQueries.length))
       );
+
+      const results = await Promise.all(queryPromises);
       
-      return {
-        articles: processedArticles,
-        count: processedArticles.length,
-        timeframeGroups // Include the timeframe groups in the response
-      };
+      const allArticles = results.flat();
+      const uniqueArticles = this.deduplicateArticles(allArticles);
+      
+      const sortedArticles = uniqueArticles
+        .sort((a, b) => {
+          const recencyDiff = new Date(b.publishedAt) - new Date(a.publishedAt);
+          if (recencyDiff !== 0) return recencyDiff;
+          return (b.relevanceScore || 0) - (a.relevanceScore || 0);
+        })
+        .slice(0, maxArticles);
+
+      return sortedArticles;
     } catch (error) {
-      console.error('Error collecting news:', error);
-      throw error;
+      console.error('News collection error:', error.message);
+      return [];
     }
   }
-  
+
+  /**
+   * Organize articles by timeframe
+   * @param {Array} articles - Array of articles to organize
+   * @returns {Object} Articles organized by timeframe
+   */
+  organizeArticlesByTimeframe(articles) {
+    const timeframeGroups = {
+      '7days': [],
+      '1month': [],
+      '3months': [],
+      '6months': []
+    };
+
+    articles.forEach(article => {
+      const daysSincePublished = article.daysSincePublished || 0;
+      
+      if (daysSincePublished < 7) {
+        timeframeGroups['7days'].push(article);
+      }
+      if (daysSincePublished < 30) {
+        timeframeGroups['1month'].push(article);
+      }
+      if (daysSincePublished < 90) {
+        timeframeGroups['3months'].push(article);
+      }
+      if (daysSincePublished < 180) {
+        timeframeGroups['6months'].push(article);
+      }
+    });
+
+    return timeframeGroups;
+  }
+
   // Add metadata to articles for better filtering and analysis
   preprocessArticles(articles) {
     // Define future-oriented terms and outcome timing indicators

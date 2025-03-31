@@ -2,6 +2,7 @@ const db = require('../utils/db');
 const newsService = require('./newsService');
 const openaiService = require('./openaiService');
 const sentimentAnalysisService = require('./sentimentAnalysisService');
+const sourceValidationService = require('./sourceValidationService');
 
 // Create the popular searches table if it doesn't exist
 const createPopularSearchesTableQuery = `
@@ -70,6 +71,9 @@ class CacheService {
     this.nextGroupId = 1;
     // Track scheduled refresh timers so we can cancel them
     this.refreshTimers = [];
+    this.validationCache = new Map();
+    this.analysisCache = new Map();
+    this.cacheTTL = 30 * 60 * 1000; // 30 minutes in milliseconds
   }
 
   /**
@@ -355,48 +359,51 @@ class CacheService {
   }
 
   /**
-   * Cache data for a single stock
+   * Cache data for a single stock with optimized processing
    * @param {string} symbol - Stock symbol
    * @param {number} groupId - Group ID for additional staggering (optional)
    */
   async cacheStockData(symbol, groupId = null) {
     try {
-      console.log(`Background caching for ${symbol}...`);
-      
-      // Skip if already in cache
-      if (popularStocksCache.has(symbol)) {
-        console.log(`${symbol} already in cache, skipping`);
+      // Skip if already in cache and not expired
+      const cachedData = popularStocksCache.get(symbol);
+      if (cachedData && !this.isCacheExpired(cachedData.timestamp)) {
         return;
       }
       
-      // Collect news articles
+      // Collect and preprocess articles in parallel
       const { articles, count } = await newsService.collectAndAnalyzeNews(symbol);
       
+      // Validate articles in parallel batches
+      const batchSize = 10;
+      const validatedArticles = [];
+      for (let i = 0; i < articles.length; i += batchSize) {
+        const batch = articles.slice(i, i + batchSize);
+        const validatedBatch = await sourceValidationService.validateArticles(batch);
+        validatedArticles.push(...validatedBatch);
+      }
+      
       // Analyze sentiment and predict movement
-      const sentimentAnalysis = await sentimentAnalysisService.analyzeSentimentAndPredict(symbol, articles);
+      const sentimentAnalysis = await sentimentAnalysisService.analyzeSentimentAndPredict(symbol, validatedArticles);
       
       // Create the complete analysis object
       const analysis = {
-        articles,
+        articles: validatedArticles,
         count,
         sentimentAnalysis,
-        timestamp: new Date()
+        timestamp: Date.now()
       };
       
-      // Store in memory cache
+      // Store in memory cache with TTL
       popularStocksCache.set(symbol, analysis);
-      console.log(`Cached ${symbol} in popular stocks cache (memory)`);
       
-      // Calculate base TTL with additional variation based on group ID
-      let baseTtlMinutes = 30;
-      if (groupId) {
-        // Add group-based variation (1-5 minutes) to further stagger different groups
-        baseTtlMinutes = 30 + ((groupId - 1) * 2);
-      }
+      // Calculate staggered TTL based on group ID
+      const baseTtlMinutes = 30;
+      const staggeredTtlMinutes = groupId ? baseTtlMinutes + ((groupId - 1) * 2) : baseTtlMinutes;
       
-      // Save to PostgreSQL for persistence with the staggered TTL
+      // Save to PostgreSQL with staggered TTL
       const expiresAt = new Date();
-      expiresAt.setMinutes(expiresAt.getMinutes() + baseTtlMinutes);
+      expiresAt.setMinutes(expiresAt.getMinutes() + staggeredTtlMinutes);
       
       await db.query(
         `INSERT INTO news_cache (symbol, data, expires_at)
@@ -407,10 +414,63 @@ class CacheService {
            expires_at = EXCLUDED.expires_at`,
         [symbol, analysis, expiresAt]
       );
-      
-      console.log(`Cached ${symbol} in PostgreSQL with base TTL of ${baseTtlMinutes} minutes`);
     } catch (error) {
-      console.error(`Error caching ${symbol}:`, error);
+      console.error(`Error caching ${symbol}:`, error.message);
+    }
+  }
+
+  /**
+   * Check if cached data is expired
+   * @param {number} timestamp - Cache timestamp
+   * @returns {boolean} Whether cache is expired
+   */
+  isCacheExpired(timestamp) {
+    return Date.now() - timestamp > this.cacheTTL;
+  }
+
+  /**
+   * Clear expired cache entries
+   */
+  clearExpiredCache() {
+    for (const [symbol, data] of popularStocksCache.entries()) {
+      if (this.isCacheExpired(data.timestamp)) {
+        popularStocksCache.delete(symbol);
+      }
+    }
+  }
+
+  /**
+   * Get cached stock data with validation
+   * @param {string} symbol - Stock symbol
+   * @returns {Object|null} Cached data or null if not found/expired
+   */
+  async getStockData(symbol) {
+    try {
+      // Check memory cache first
+      const cachedData = popularStocksCache.get(symbol);
+      if (cachedData && !this.isCacheExpired(cachedData.timestamp)) {
+        return cachedData;
+      }
+
+      // Check PostgreSQL cache
+      const result = await db.query(
+        `SELECT data, expires_at FROM news_cache WHERE symbol = $1`,
+        [symbol]
+      );
+
+      if (result.rows.length > 0) {
+        const { data, expires_at } = result.rows[0];
+        if (new Date(expires_at) > new Date()) {
+          // Update memory cache
+          popularStocksCache.set(symbol, data);
+          return data;
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error(`Error getting cached data for ${symbol}:`, error.message);
+      return null;
     }
   }
 
@@ -621,118 +681,38 @@ Rules:
   }
 
   /**
-   * Get cached stock data for popular stocks
-   * @param {string} symbol - Stock symbol
-   * @returns {Promise<Object|null>} - Cached data or null if not found
-   */
-  async getStockData(symbol) {
-    try {
-      const normalizedSymbol = symbol.toUpperCase().trim();
-      
-      // Check in-memory cache
-      if (popularStocksCache.has(normalizedSymbol)) {
-        console.log(`Popular cache hit for symbol: ${normalizedSymbol}`);
-        return popularStocksCache.get(normalizedSymbol);
-      }
-      
-      // Check PostgreSQL cache
-      const result = await db.query(
-        `SELECT data FROM news_cache 
-         WHERE symbol = $1 AND expires_at > CURRENT_TIMESTAMP`,
-        [normalizedSymbol]
-      );
-      
-      if (result.rows.length > 0) {
-        const data = result.rows[0].data;
-        // Update in-memory cache
-        popularStocksCache.set(normalizedSymbol, data);
-        console.log(`PostgreSQL cache hit for symbol: ${normalizedSymbol}`);
-        return data;
-      }
-      
-      console.log(`Cache miss for symbol: ${normalizedSymbol}`);
-      return null;
-    } catch (error) {
-      console.error('Error getting stock data from cache:', error);
-      return null;
-    }
-  }
-
-  /**
    * Clear the popular stocks cache
    * @returns {Promise<boolean>} - Success status
    */
   async clearPopularCache() {
     try {
-      console.log('Starting full cache clearing process...');
-      
-      // Cancel all ongoing cache operations
-      this.cancelAllCacheTimers();
-      
-      // Reset active operations counter
-      this.activeCachingOperations = 0;
-      
-      // Clear the in-memory cache
+      // Clear memory cache
       popularStocksCache.clear();
-      console.log('Popular stocks cache cleared');
       
-      // Clear the cache groups
-      this.cacheGroups.clear();
-      console.log('Cache groups cleared');
-      
-      // Reset internal state
-      this.nextGroupId = 1;
-      
-      // Clear any other in-memory state that might persist
-      Object.keys(this).forEach(key => {
-        // Only reset arrays and objects, not functions or primitives
-        if (Array.isArray(this[key])) {
-          this[key] = [];
-        } else if (this[key] && typeof this[key] === 'object' && !(this[key] instanceof Map) && !(this[key] instanceof Set)) {
-          this[key] = {};
-        }
-      });
-      
-      console.log('All internal cache state reset');
-      
-      // Clear any global cache that might exist
-      if (global.stockCache) {
-        global.stockCache = new Map();
-        console.log('Global stock cache cleared');
-      }
-      
-      if (global.newsCache) {
-        global.newsCache = new Map();
-        console.log('Global news cache cleared');
-      }
-      
-      // Clear PostgreSQL tables
+      // Clear PostgreSQL cache
       try {
         // First delete expired entries
         await db.query('DELETE FROM news_cache WHERE expires_at <= CURRENT_TIMESTAMP');
-        console.log('Cleared expired entries from news_cache');
         
         // Then truncate the tables
         await db.query('TRUNCATE TABLE news_cache, popular_searches CASCADE');
-        console.log('PostgreSQL tables cleared');
         
         // Reset sequences
         await db.query('ALTER SEQUENCE news_cache_id_seq RESTART WITH 1');
         await db.query('ALTER SEQUENCE popular_searches_id_seq RESTART WITH 1');
-        console.log('PostgreSQL sequences reset');
       } catch (dbError) {
-        console.error('Error clearing PostgreSQL tables:', dbError);
+        console.error('Database error:', dbError.message);
+        throw dbError;
       }
       
       // Restart the staggered caching process with fresh data
       setTimeout(() => {
-        console.log('Restarting staggered caching with fresh data...');
         this.startStaggeredCaching();
-      }, 1000); // Small delay to ensure clean restart
+      }, 1000);
       
       return true;
     } catch (error) {
-      console.error('Error clearing popular cache:', error);
+      console.error('Cache clearing error:', error.message);
       return false;
     }
   }
