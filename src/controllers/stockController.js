@@ -35,16 +35,19 @@ class StockController {
       
       // If not in cache, collect news articles
       console.log(`Collecting news for ${normalizedSymbol}...`);
-      const { articles, count } = await newsService.collectAndAnalyzeNews(normalizedSymbol, 30);
+      const articles = await newsService.collectAndAnalyzeNews(normalizedSymbol, 30);
+      
+      console.log(`Collected ${articles.length} articles for ${normalizedSymbol}`);
       
       if (!articles || articles.length === 0) {
+        console.log(`No articles found for ${normalizedSymbol}`);
         return res.status(404).json({
           error: 'No news articles found',
           message: `Could not find any relevant news articles for ${normalizedSymbol}`
         });
       }
       
-      console.log(`Collected ${count} articles for ${normalizedSymbol}, analyzing sentiment...`);
+      console.log(`Analyzing sentiment for ${articles.length} articles...`);
       
       // Use sentiment analysis service to analyze the collected articles
       const sentimentAnalysis = await sentimentAnalysisService.analyzeSentimentAndPredict(normalizedSymbol, articles);
@@ -52,13 +55,11 @@ class StockController {
       // Add source validation metadata to the analysis
       for (const timeframe in sentimentAnalysis) {
         if (sentimentAnalysis[timeframe] && sentimentAnalysis[timeframe].key_articles) {
-          sentimentAnalysis[timeframe].key_articles = sentimentAnalysis[timeframe].key_articles.map(article => {
-            // Only validate articles that weren't validated during collection
-            if (!article.credibilityScore) {
-              return sourceValidationService.validateArticleSource(article);
-            }
-            return article;
-          });
+          sentimentAnalysis[timeframe].key_articles = await Promise.all(
+            sentimentAnalysis[timeframe].key_articles.map(article => 
+              sourceValidationService.validateArticleSource(article)
+            )
+          );
         }
       }
       
@@ -71,13 +72,16 @@ class StockController {
         timestamp: new Date(),
         sentimentAnalysis,
         source: 'fresh',
-        articleCount: count,
+        articleCount: articles.length,
         sourceCredibility: sourceCredibilityStats
       };
 
-      // Cache the result
-      await cacheService.cacheStockData(normalizedSymbol);
+      // Cache the result in the background
+      cacheService.cacheStockData(normalizedSymbol).catch(err => {
+        console.error(`Error caching data for ${normalizedSymbol}:`, err.message);
+      });
 
+      console.log(`Successfully analyzed ${normalizedSymbol}`);
       res.json(result);
     } catch (error) {
       console.error('Error in stock analysis:', error);

@@ -371,8 +371,12 @@ class CacheService {
         return;
       }
       
-      // Collect and preprocess articles in parallel
-      const { articles, count } = await newsService.collectAndAnalyzeNews(symbol);
+      // Collect and preprocess articles
+      const articles = await newsService.collectAndAnalyzeNews(symbol);
+      
+      if (!articles || !Array.isArray(articles)) {
+        throw new Error(`No valid articles returned for ${symbol}`);
+      }
       
       // Validate articles in parallel batches
       const batchSize = 10;
@@ -389,7 +393,7 @@ class CacheService {
       // Create the complete analysis object
       const analysis = {
         articles: validatedArticles,
-        count,
+        count: validatedArticles.length,
         sentimentAnalysis,
         timestamp: Date.now()
       };

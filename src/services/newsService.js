@@ -180,6 +180,7 @@ class NewsService {
 
   async getGoogleNewsArticles(query, maxArticles = 5) {
     try {
+      console.log(`Fetching news for query: ${query}`);
       const response = await axios.get('https://serpapi.com/search.json', {
         params: {
           q: query,
@@ -193,7 +194,10 @@ class NewsService {
         }
       });
 
+      console.log('SerpAPI response status:', response.status);
+
       if (!response.data?.news_results) {
+        console.log('No news_results found in response');
         return [];
       }
 
@@ -202,36 +206,44 @@ class NewsService {
         .filter(article => {
           const text = `${article.title} ${article.snippet || ''}`.toLowerCase();
           const symbol = query.split(' ')[0].toUpperCase();
-          const companyName = 'Apple';
           
+          // More lenient filtering criteria
           const hasSymbol = text.includes(symbol.toLowerCase()) || 
                            text.includes(`$${symbol.toLowerCase()}`);
-          const hasCompanyName = text.toLowerCase().includes(companyName.toLowerCase());
           
-          return (
-            (hasSymbol || hasCompanyName) &&
+          const isValid = hasSymbol &&
             article.title &&
             article.link &&
-            article.date &&
             !article.link.includes('youtube.com') &&
             !article.link.includes('facebook.com') &&
-            !article.link.includes('twitter.com')
-          );
+            !article.link.includes('twitter.com');
+
+          console.log(`Article filtering for "${article.title}":`, {
+            hasSymbol,
+            hasRequiredFields: !!(article.title && article.link),
+            isValid
+          });
+          
+          return isValid;
         })
         .map(article => ({
           title: article.title,
-          description: article.snippet,
+          description: article.snippet || '',
           url: article.link,
-          publishedAt: article.date,
-          source: article.source,
-          content: article.snippet,
+          publishedAt: article.date || new Date().toISOString(),
+          source: article.source || 'Unknown',
+          content: article.snippet || article.title,
           relevanceScore: this.calculateRelevanceScore(article, query.split(' ')[0])
         }))
         .slice(0, maxArticles);
 
+      console.log(`Processed ${processedArticles.length} articles after filtering`);
       return processedArticles;
     } catch (error) {
       console.error('SerpAPI error:', error.message);
+      if (error.response) {
+        console.error('Error response:', error.response.data);
+      }
       return [];
     }
   }
@@ -342,30 +354,49 @@ class NewsService {
    */
   async collectAndAnalyzeNews(symbol, maxArticles = 20) {
     try {
+      console.log(`Collecting news for symbol: ${symbol}`);
       const searchQueries = [
+        `${symbol} stock`,
         `${symbol} stock news`,
         `${symbol} company news`,
-        `${symbol} financial news`,
-        `${symbol} market news`
+        `${symbol} financial news`
       ];
 
       const queryPromises = searchQueries.map(query => 
         this.getGoogleNewsArticles(query, Math.ceil(maxArticles / searchQueries.length))
       );
 
+      console.log(`Executing ${searchQueries.length} search queries...`);
       const results = await Promise.all(queryPromises);
+      console.log(`Received results from all queries`);
       
       const allArticles = results.flat();
+      console.log(`Total articles before deduplication: ${allArticles.length}`);
+      
+      if (allArticles.length === 0) {
+        console.log('No articles found from any query');
+        return [];
+      }
+
       const uniqueArticles = this.deduplicateArticles(allArticles);
+      console.log(`Articles after deduplication: ${uniqueArticles.length}`);
       
       const sortedArticles = uniqueArticles
         .sort((a, b) => {
-          const recencyDiff = new Date(b.publishedAt) - new Date(a.publishedAt);
-          if (recencyDiff !== 0) return recencyDiff;
-          return (b.relevanceScore || 0) - (a.relevanceScore || 0);
+          // Sort by date if available
+          const dateA = new Date(a.publishedAt || Date.now());
+          const dateB = new Date(b.publishedAt || Date.now());
+          const recencyDiff = dateB - dateA;
+          
+          // If dates are the same, sort by relevance score
+          if (recencyDiff === 0) {
+            return (b.relevanceScore || 0) - (a.relevanceScore || 0);
+          }
+          return recencyDiff;
         })
         .slice(0, maxArticles);
 
+      console.log(`Final number of articles: ${sortedArticles.length}`);
       return sortedArticles;
     } catch (error) {
       console.error('News collection error:', error.message);
