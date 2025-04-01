@@ -54,11 +54,49 @@ class StockController {
       
       // Add source validation metadata to the analysis
       for (const timeframe in sentimentAnalysis) {
-        if (sentimentAnalysis[timeframe] && sentimentAnalysis[timeframe].key_articles) {
-          sentimentAnalysis[timeframe].key_articles = await Promise.all(
-            sentimentAnalysis[timeframe].key_articles.map(article => 
-              sourceValidationService.validateArticleSource(article)
-            )
+        if (sentimentAnalysis[timeframe]) {
+          // Validate key articles
+          if (sentimentAnalysis[timeframe].key_articles) {
+            sentimentAnalysis[timeframe].key_articles = await Promise.all(
+              sentimentAnalysis[timeframe].key_articles.map(async article => {
+                const validatedArticle = await sourceValidationService.validateArticleSource(article);
+                return {
+                  ...validatedArticle,
+                  link: validatedArticle.articleLink || validatedArticle.url || validatedArticle.source
+                };
+              })
+            );
+          }
+
+          // Add full articles used for this timeframe
+          const timeframeArticles = articles.filter(article => {
+            const text = (article.title + ' ' + article.description).toLowerCase();
+            const pubDate = new Date(article.publishedAt);
+            const daysSincePublished = Math.floor((new Date() - pubDate) / (1000 * 60 * 60 * 24));
+
+            switch(timeframe) {
+              case '7days':
+                return daysSincePublished <= 7;
+              case '1month':
+                return daysSincePublished <= 30;
+              case '3months':
+                return daysSincePublished <= 90;
+              case '6months':
+                return daysSincePublished <= 180;
+              default:
+                return false;
+            }
+          });
+
+          // Add validated articles to the timeframe
+          sentimentAnalysis[timeframe].articles = await Promise.all(
+            timeframeArticles.map(async article => {
+              const validatedArticle = await sourceValidationService.validateArticleSource(article);
+              return {
+                ...validatedArticle,
+                link: validatedArticle.articleLink || validatedArticle.url || validatedArticle.source
+              };
+            })
           );
         }
       }

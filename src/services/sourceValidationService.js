@@ -82,6 +82,21 @@ class SourceValidationService {
   }
 
   /**
+   * Validate a source domain
+   * @param {string} domain - Domain to validate
+   * @returns {Object} Credibility score and metadata
+   */
+  validateSource(domain) {
+    const sourceInfo = this.getSourceInfo(domain);
+    const biasAssessment = {
+      politicalBias: 'neutral',
+      sensationalism: 'low'
+    };
+    
+    return this.calculateCredibilityScore(sourceInfo, biasAssessment);
+  }
+
+  /**
    * Validate article source with caching
    * @param {Object} article - Article to validate
    * @returns {Object} Validated article with credibility metadata
@@ -113,7 +128,8 @@ class SourceValidationService {
       const validationResult = {
         credibilityScore: credibilityResult,
         biasAssessment: biasResult,
-        isOpinionContent: this.isOpinionContent(article)
+        isOpinionContent: this.isOpinionContent(article),
+        articleLink: article.url || article.source
       };
 
       // Cache the result
@@ -125,7 +141,10 @@ class SourceValidationService {
       };
     } catch (error) {
       console.error('Error validating article source:', error);
-      return article;
+      return {
+        ...article,
+        articleLink: article.url || article.source
+      };
     }
   }
 
