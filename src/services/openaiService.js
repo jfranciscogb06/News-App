@@ -4,7 +4,8 @@ const config = require('../config/config');
 class OpenAIService {
   constructor() {
     this.openai = new OpenAI({
-      apiKey: config.openai.apiKey
+      apiKey: config.openai.apiKey,
+      baseURL: config.openai.baseURL || 'https://api.openai.com/v1'
     });
   }
 
@@ -648,7 +649,7 @@ Content: ${article.description || article.content || 'No content available'}
 
       // Create the OpenAI API request
       const response = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini", // or equivalent available model
+        model: "gpt-3.5-turbo-0125", // or equivalent available model
         messages: [
           systemMessage,
           {
@@ -686,8 +687,7 @@ Content: ${article.description || article.content || 'No content available'}
             impact: "neutral",
             confidence: "low"
           }
-        ],
-        key_articles: []
+        ]
       };
     }
   }
@@ -1069,6 +1069,138 @@ Content: ${article.description || article.content || 'No content available'}
     });
 
     return result;
+  }
+
+  /**
+   * Generate summaries for each timeframe using GPT-4
+   * @param {Object} analysisData - Complete analysis data with all timeframes
+   * @param {string} symbol - Stock symbol
+   * @returns {Promise<Object>} Object containing summaries for each timeframe
+   */
+  async summarizeTimeframes(analysisData, symbol) {
+    try {
+      console.log(`Generating timeframe summaries for ${symbol}...`);
+      
+      const timeframes = ['7days', '1month', '3months', '6months'];
+      const timeframeDescriptions = {
+        '7days': 'the next 7 days (short-term)',
+        '1month': 'the next month (near-term)',
+        '3months': 'the next 3 months (medium-term)',
+        '6months': 'the next 6 months (long-term)'
+      };
+      
+      const summaries = {};
+      
+      // Process each timeframe in parallel
+      const summaryPromises = timeframes.map(async timeframe => {
+        if (!analysisData[timeframe]) {
+          summaries[timeframe] = `No data available for ${timeframeDescriptions[timeframe]}.`;
+          return;
+        }
+        
+        // Extract key articles for this timeframe
+        const timeframeArticles = analysisData[timeframe].key_articles || [];
+        
+        // Get sentiment data for this timeframe
+        const sentiment = {
+          score: analysisData[timeframe].sentiment_score || analysisData[timeframe].sentiment,
+          prediction: analysisData[timeframe].prediction || analysisData[timeframe].direction,
+          confidence: analysisData[timeframe].confidence || analysisData[timeframe].confidence_level,
+          magnitude: analysisData[timeframe].magnitude || analysisData[timeframe].expected_change_percent,
+          key_factors: analysisData[timeframe].key_factors || analysisData[timeframe].price_drivers
+        };
+        
+        // Use GPT-4 for the timeframe summary
+        const response = await this.openai.chat.completions.create({
+          model: "gpt-4-1106-preview", // Using GPT-4 for better summarization
+          messages: [
+            {
+              role: "system",
+              content: `You are a financial analyst tasked with creating a focused summary for ${symbol} stock over ${timeframeDescriptions[timeframe]} based on sentiment analysis and relevant articles.
+              
+              Your goal is to create a concise yet informative summary that:
+              1. Clearly explains the key factors influencing the stock in this timeframe
+              2. Highlights important evidence and data points from the articles
+              3. Provides a balanced view that acknowledges differing perspectives if present
+              4. Focuses specifically on what investors can expect in ${timeframeDescriptions[timeframe]}
+              
+              IMPORTANT FORMATTING GUIDELINES:
+              - DO NOT include phrases like "The articles contributing to this analysis are deemed to have moderate credibility and low sensationalism, with a neutral political bias, providing a balanced perspective for investors."
+              - DO NOT mention specific sentiment scores in your summary (e.g., don't write "sentiment score: 0.3")
+              - DO NOT label article credibility in your summary
+              - Focus on the actual content of the articles and the factors they discuss
+              - Use direct, straightforward language about the factors affecting the stock
+              
+              Keep the summary under 150 words, focused, and data-driven. Use numbers and specific references where relevant.
+              Do not use markdown formatting. Return ONLY the summary as plain text without headings or preamble.`
+            },
+            {
+              role: "user",
+              content: JSON.stringify({
+                symbol,
+                timeframe,
+                sentiment,
+                articles: timeframeArticles
+              })
+            }
+          ],
+          temperature: 0.3,
+          max_tokens: 300
+        });
+        
+        if (!response.choices?.[0]?.message?.content) {
+          throw new Error(`Invalid response from OpenAI for ${timeframe} summary`);
+        }
+        
+        return { timeframe, summary: response.choices[0].message.content.trim() };
+      });
+      
+      // Wait for all summaries to complete
+      const results = await Promise.all(summaryPromises);
+      
+      // Combine results into the summaries object
+      results.forEach(result => {
+        if (result) {
+          summaries[result.timeframe] = result.summary;
+        }
+      });
+      
+      return summaries;
+    } catch (error) {
+      console.error('Error generating timeframe summaries:', error);
+      return {
+        '7days': `Unable to generate summary for the short-term outlook of ${symbol}.`,
+        '1month': `Unable to generate summary for the one-month outlook of ${symbol}.`,
+        '3months': `Unable to generate summary for the three-month outlook of ${symbol}.`,
+        '6months': `Unable to generate summary for the six-month outlook of ${symbol}.`
+      };
+    }
+  }
+
+  async generateSummary(title, content) {
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `You are a financial news summarizer. Generate a concise 2-3 sentence summary of this article focusing on key points relevant to stock performance.`
+          },
+          {
+            role: "user",
+            content: `Title: ${title}\nContent: ${content}`
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 150
+      });
+
+      const summary = response.choices[0].message.content;
+      return summary;
+    } catch (error) {
+      console.error('Error generating summary:', error);
+      return content; // Return original content if summary generation fails
+    }
   }
 }
 

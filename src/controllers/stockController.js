@@ -3,6 +3,8 @@ const openaiService = require('../services/openaiService');
 const cacheService = require('../services/cacheService');
 const sourceValidationService = require('../services/sourceValidationService');
 const sentimentAnalysisService = require('../services/sentimentAnalysisService');
+const queueService = require('../services/queueService');
+const logger = require('../utils/logger');
 
 class StockController {
   /**
@@ -13,127 +15,76 @@ class StockController {
    */
   async analyzeStock(req, res, next) {
     try {
-      const { symbol } = req.params;
+      const symbol = req.symbol || req.params.symbol;
+      const analysisDate = req.analysisDate || req.query?.analysisDate;
+      const ignoreAfter = req.ignoreAfter || req.query?.ignoreAfter;
       
-      if (!symbol || typeof symbol !== 'string') {
-        return res.status(400).json({ 
-          error: 'Invalid stock symbol',
-          message: 'Please provide a valid stock symbol'
-        });
+      if (!symbol) {
+        const error = new Error('Stock symbol is required');
+        if (res && res.status) {
+          return res.status(400).json({ error: error.message });
+        }
+        throw error;
       }
       
-      const normalizedSymbol = symbol.toUpperCase().trim();
-      console.log(`Processing analysis request for ${normalizedSymbol}`);
+      logger.info(`Processing analysis request for ${symbol}`);
       
-      // Try to get from cache first
-      const cachedData = await cacheService.getStockData(normalizedSymbol);
-      
-      if (cachedData) {
-        console.log(`Returning cached data for ${normalizedSymbol}`);
-        return res.json(cachedData);
-      }
-      
-      // If not in cache, collect news articles
-      console.log(`Collecting news for ${normalizedSymbol}...`);
-      const articles = await newsService.collectAndAnalyzeNews(normalizedSymbol, 30);
-      
-      console.log(`Collected ${articles.length} articles for ${normalizedSymbol}`);
-      
-      if (!articles || articles.length === 0) {
-        console.log(`No articles found for ${normalizedSymbol}`);
-        return res.status(404).json({
-          error: 'No news articles found',
-          message: `Could not find any relevant news articles for ${normalizedSymbol}`
-        });
-      }
-      
-      console.log(`Analyzing sentiment for ${articles.length} articles...`);
-      
-      // Use sentiment analysis service to analyze the collected articles
-      const sentimentAnalysis = await sentimentAnalysisService.analyzeSentimentAndPredict(normalizedSymbol, articles);
-      
-      // Add source validation metadata to the analysis
-      for (const timeframe in sentimentAnalysis) {
-        if (sentimentAnalysis[timeframe]) {
-          // Validate key articles
-          if (sentimentAnalysis[timeframe].key_articles) {
-            sentimentAnalysis[timeframe].key_articles = await Promise.all(
-              sentimentAnalysis[timeframe].key_articles.map(async article => {
-                const validatedArticle = await sourceValidationService.validateArticleSource(article);
-                return {
-                  ...validatedArticle,
-                  link: validatedArticle.articleLink || validatedArticle.url || validatedArticle.source
-                };
-              })
-            );
+      // Only use cache if not doing historical analysis
+      if (!analysisDate && !ignoreAfter) {
+        const cachedData = await cacheService.getStockData(symbol);
+        if (cachedData) {
+          logger.info(`Returning cached data for ${symbol}`);
+          if (res && res.json) {
+            return res.json(cachedData);
           }
-
-          // Add full articles used for this timeframe
-          const timeframeArticles = articles.filter(article => {
-            const text = (article.title + ' ' + article.description).toLowerCase();
-            const pubDate = new Date(article.publishedAt);
-            const daysSincePublished = Math.floor((new Date() - pubDate) / (1000 * 60 * 60 * 24));
-
-            switch(timeframe) {
-              case '7days':
-                return daysSincePublished <= 7;
-              case '1month':
-                return daysSincePublished <= 30;
-              case '3months':
-                return daysSincePublished <= 90;
-              case '6months':
-                return daysSincePublished <= 180;
-              default:
-                return false;
-            }
-          });
-
-          // Add validated articles to the timeframe
-          sentimentAnalysis[timeframe].articles = await Promise.all(
-            timeframeArticles.map(async article => {
-              const validatedArticle = await sourceValidationService.validateArticleSource(article);
-              return {
-                ...validatedArticle,
-                link: validatedArticle.articleLink || validatedArticle.url || validatedArticle.source
-              };
-            })
-          );
+          return cachedData;
         }
       }
       
-      // Calculate source credibility statistics
-      const sourceCredibilityStats = this.calculateSourceCredibilityStats(sentimentAnalysis);
+      // Clear symbol cache using the correct method name
+      await cacheService.clearSymbolCache(symbol);
       
-      // Create the response object
-      const result = {
-        symbol: normalizedSymbol,
-        timestamp: new Date(),
-        sentimentAnalysis,
-        source: 'fresh',
-        articleCount: articles.length,
-        sourceCredibility: sourceCredibilityStats
-      };
-
-      // Cache the result in the background
-      cacheService.cacheStockData(normalizedSymbol).catch(err => {
-        console.error(`Error caching data for ${normalizedSymbol}:`, err.message);
-      });
-
-      console.log(`Successfully analyzed ${normalizedSymbol}`);
-      res.json(result);
-    } catch (error) {
-      console.error('Error in stock analysis:', error);
+      const articles = await newsService.collectAndAnalyzeNews(symbol, 30, analysisDate, ignoreAfter);
       
-      // If it's a specific OpenAI error, provide a better response
-      if (error.message && error.message.includes('Invalid analysis structure')) {
-        return res.status(500).json({
-          error: 'An error occurred while analyzing the stock',
-          details: error.message,
-          suggestion: 'The analysis could not be properly structured. This may be due to insufficient news data or an issue with the OpenAI service.'
-        });
+      if (!articles || articles.length === 0) {
+        const error = new Error(`Could not find any relevant news articles for ${symbol}`);
+        if (res && res.status) {
+          return res.status(404).json({ error: error.message });
+        }
+        throw error;
       }
       
-      next(error);
+      // Use sentiment analysis service in parallel with other processing
+      const [sentimentAnalysis, sourceStats] = await Promise.all([
+        sentimentAnalysisService.analyzeSentimentAndPredict(symbol, articles),
+        this.calculateSourceCredibilityStats(articles)
+      ]);
+      
+      const response = {
+        symbol,
+        articles,
+        sentimentAnalysis,
+        sourceStats,
+        timestamp: new Date().toISOString(),
+        fromCache: false,
+        articleCount: articles.length
+      };
+      
+      // Only cache if not doing historical analysis
+      if (!analysisDate && !ignoreAfter) {
+        await cacheService.cacheStockData(symbol, response);
+      }
+      
+      if (res && res.json) {
+        return res.json(response);
+      }
+      return response;
+    } catch (error) {
+      logger.error('Error in stock analysis:', { error });
+      if (res && next) {
+        return next(error);
+      }
+      throw error;
     }
   }
   
@@ -240,6 +191,288 @@ class StockController {
       console.log('Cache clearing complete');
     } catch (error) {
       console.error('Error clearing cache:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * Get popular stocks from the cache service
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async getPopularStocks(req, res, next) {
+    try {
+      console.log('Getting popular stocks...');
+      const symbols = await cacheService.getTop100PopularStocks();
+      
+      if (!symbols || symbols.length === 0) {
+        return res.status(404).json({
+          error: 'No popular stocks found',
+          message: 'Could not retrieve popular stocks at this time'
+        });
+      }
+
+      // Start a job to process all stocks in parallel and wait for the result
+      const batchResult = await queueService.addJob('analysis', async () => {
+        try {
+          const startTime = Date.now();
+          
+          // Process all stocks in parallel with individual jobs
+          const analysisPromises = symbols.map(async (symbol) => {
+            try {
+              // Try to get from cache first
+              const cachedData = await cacheService.getStockData(symbol);
+              
+              if (cachedData) {
+                logger.info(`Using cached data for ${symbol}`);
+                return { symbol, data: cachedData, source: 'cache' };
+              }
+              
+              // If not in cache, start an analysis job
+              return queueService.addJob('analysis', async () => {
+                logger.info(`Starting analysis job for ${symbol}`);
+                
+                // Collect and analyze news
+                const articles = await newsService.collectAndAnalyzeNews(symbol, 30);
+                
+                if (!articles || articles.length === 0) {
+                  logger.warn(`No articles found for ${symbol}`);
+                  return { 
+                    symbol, 
+                    error: 'No news articles found',
+                    source: 'error'
+                  };
+                }
+                
+                // Use sentiment analysis service in parallel with other stocks
+                const sentimentAnalysis = await sentimentAnalysisService.analyzeSentimentAndPredict(symbol, articles);
+                
+                // Process timeframes in parallel
+                const sourceCredibilityStats = this.calculateSourceCredibilityStats(sentimentAnalysis);
+                const timeframeSummaries = await openaiService.summarizeTimeframes(sentimentAnalysis, symbol);
+                
+                // Create the full response
+                const result = {
+                  symbol,
+                  timestamp: new Date(),
+                  timeframeSummaries,
+                  sentimentAnalysis,
+                  source: 'fresh',
+                  articleCount: articles.length,
+                  sourceCredibility: sourceCredibilityStats
+                };
+                
+                // Cache the result with the pre-analyzed data (non-blocking)
+                queueService.addJob('caching', async () => {
+                  try {
+                    await cacheService.cacheStockData(symbol, result);
+                    logger.info(`Successfully cached analysis for ${symbol}`);
+                  } catch (err) {
+                    logger.error(`Error caching data for ${symbol}:`, err.message);
+                  }
+                }, { symbol });
+                
+                logger.info(`Completed analysis for ${symbol}`);
+                return { symbol, data: result, source: 'fresh' };
+              }, { symbol });
+            } catch (error) {
+              logger.error(`Error analyzing ${symbol}:`, error);
+              return { 
+                symbol, 
+                error: error.message,
+                source: 'error'
+              };
+            }
+          });
+          
+          // Wait for all analysis jobs to complete
+          const results = await Promise.all(analysisPromises);
+          
+          // Format the response
+          const successResults = {};
+          const errorResults = {};
+          
+          results.forEach(result => {
+            if (result.error) {
+              errorResults[result.symbol] = { error: result.error };
+            } else {
+              successResults[result.symbol] = result.data;
+            }
+          });
+          
+          const response = {
+            results: successResults,
+            errors: Object.keys(errorResults).length > 0 ? errorResults : undefined,
+            count: {
+              total: symbols.length,
+              success: Object.keys(successResults).length,
+              error: Object.keys(errorResults).length
+            },
+            timestamp: new Date(),
+            processingTime: (Date.now() - startTime) / 1000
+          };
+          
+          logger.info(`Batch analysis complete in ${response.processingTime.toFixed(2)}s`);
+          return response;
+        } catch (error) {
+          logger.error('Error in batch stock analysis job:', error);
+          throw error;
+        }
+      }, { symbols });
+
+      // Return the complete response
+      return res.json(batchResult);
+    } catch (error) {
+      console.error('Error getting popular stocks:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * Analyze multiple stocks in parallel
+   * @param {Object} req - Express request object with an array of stock symbols in the body
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next middleware function
+   */
+  async analyzeMultipleStocks(req, res, next) {
+    try {
+      const { symbols } = req.body;
+      
+      if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+        return res.status(400).json({ 
+          error: 'Invalid request',
+          message: 'Please provide an array of stock symbols'
+        });
+      }
+      
+      // Normalize symbols and limit to a reasonable number
+      const normalizedSymbols = symbols
+        .map(symbol => (typeof symbol === 'string' ? symbol.toUpperCase().trim() : ''))
+        .filter(symbol => symbol && symbol.length <= 5)
+        .slice(0, 20); // Limit to 20 stocks per request for performance
+      
+      if (normalizedSymbols.length === 0) {
+        return res.status(400).json({ 
+          error: 'Invalid symbols',
+          message: 'No valid stock symbols provided'
+        });
+      }
+      
+      logger.info(`Processing batch analysis for ${normalizedSymbols.length} stocks`);
+      
+      // Start a job to process all stocks in parallel and wait for the result
+      const batchResult = await queueService.addJob('analysis', async () => {
+        try {
+          const startTime = Date.now();
+          
+          // Process all stocks in parallel with individual jobs
+          const analysisPromises = normalizedSymbols.map(async (symbol) => {
+            try {
+              // Try to get from cache first
+              const cachedData = await cacheService.getStockData(symbol);
+              
+              if (cachedData) {
+                logger.info(`Using cached data for ${symbol}`);
+                return { symbol, data: cachedData, source: 'cache' };
+              }
+              
+              // If not in cache, start an analysis job
+              return queueService.addJob('analysis', async () => {
+                logger.info(`Starting analysis job for ${symbol}`);
+                
+                // Collect and analyze news
+                const articles = await newsService.collectAndAnalyzeNews(symbol, 30);
+                
+                if (!articles || articles.length === 0) {
+                  logger.warn(`No articles found for ${symbol}`);
+                  return { 
+                    symbol, 
+                    error: 'No news articles found',
+                    source: 'error'
+                  };
+                }
+                
+                // Use sentiment analysis service in parallel with other stocks
+                const sentimentAnalysis = await sentimentAnalysisService.analyzeSentimentAndPredict(symbol, articles);
+                
+                // Process timeframes in parallel
+                const sourceCredibilityStats = this.calculateSourceCredibilityStats(sentimentAnalysis);
+                const timeframeSummaries = await openaiService.summarizeTimeframes(sentimentAnalysis, symbol);
+                
+                // Create the full response
+                const result = {
+                  symbol,
+                  timestamp: new Date(),
+                  timeframeSummaries,
+                  sentimentAnalysis,
+                  source: 'fresh',
+                  articleCount: articles.length,
+                  sourceCredibility: sourceCredibilityStats
+                };
+                
+                // Cache the result with the pre-analyzed data (non-blocking)
+                queueService.addJob('caching', async () => {
+                  try {
+                    await cacheService.cacheStockData(symbol, result);
+                    logger.info(`Successfully cached analysis for ${symbol}`);
+                  } catch (err) {
+                    logger.error(`Error caching data for ${symbol}:`, err.message);
+                  }
+                }, { symbol });
+                
+                logger.info(`Completed analysis for ${symbol}`);
+                return { symbol, data: result, source: 'fresh' };
+              }, { symbol });
+            } catch (error) {
+              logger.error(`Error analyzing ${symbol}:`, error);
+              return { 
+                symbol, 
+                error: error.message,
+                source: 'error'
+              };
+            }
+          });
+          
+          // Wait for all analysis jobs to complete
+          const results = await Promise.all(analysisPromises);
+          
+          // Format the response
+          const successResults = {};
+          const errorResults = {};
+          
+          results.forEach(result => {
+            if (result.error) {
+              errorResults[result.symbol] = { error: result.error };
+            } else {
+              successResults[result.symbol] = result.data;
+            }
+          });
+          
+          const response = {
+            results: successResults,
+            errors: Object.keys(errorResults).length > 0 ? errorResults : undefined,
+            count: {
+              total: normalizedSymbols.length,
+              success: Object.keys(successResults).length,
+              error: Object.keys(errorResults).length
+            },
+            timestamp: new Date(),
+            processingTime: (Date.now() - startTime) / 1000
+          };
+          
+          logger.info(`Batch analysis complete in ${response.processingTime.toFixed(2)}s`);
+          return response;
+        } catch (error) {
+          logger.error('Error in batch stock analysis job:', error);
+          throw error;
+        }
+      }, { symbols: normalizedSymbols });
+      
+      // Return the complete response
+      return res.json(batchResult);
+    } catch (error) {
+      logger.error('Error in batch stock analysis:', error);
       next(error);
     }
   }

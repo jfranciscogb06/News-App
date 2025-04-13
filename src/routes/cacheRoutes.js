@@ -6,4 +6,7 @@ const stockController = require('../controllers/stockController');
 router.get('/clear', stockController.clearCache.bind(stockController));
 router.post('/clear', stockController.clearCache.bind(stockController));
 
+// Route for getting popular stocks
+router.get('/popular', stockController.getPopularStocks.bind(stockController));
+
 module.exports = router; 

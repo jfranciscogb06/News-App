@@ -89,11 +89,17 @@ class SourceValidationService {
   validateSource(domain) {
     const sourceInfo = this.getSourceInfo(domain);
     const biasAssessment = {
-      politicalBias: 'neutral',
+      politicalBias: sourceInfo.bias || 'neutral',
       sensationalism: 'low'
     };
     
-    return this.calculateCredibilityScore(sourceInfo, biasAssessment);
+    // Ensure we return a default score even for unknown sources
+    const credibilityScore = this.calculateCredibilityScore(sourceInfo, biasAssessment);
+    return {
+      ...credibilityScore,
+      source: domain,
+      reliability: sourceInfo.reliability || 'unknown'
+    };
   }
 
   /**
@@ -124,13 +130,17 @@ class SourceValidationService {
         this.assessContentBias(article)
       ]);
 
-      // Combine results
+      // Combine results - don't add articleLink if url already exists
       const validationResult = {
         credibilityScore: credibilityResult,
         biasAssessment: biasResult,
-        isOpinionContent: this.isOpinionContent(article),
-        articleLink: article.url || article.source
+        isOpinionContent: this.isOpinionContent(article)
       };
+
+      // Only add articleLink if url doesn't exist
+      if (!article.url) {
+        validationResult.articleLink = article.source;
+      }
 
       // Cache the result
       this.sourceCache.set(cacheKey, validationResult);
@@ -141,10 +151,14 @@ class SourceValidationService {
       };
     } catch (error) {
       console.error('Error validating article source:', error);
-      return {
-        ...article,
-        articleLink: article.url || article.source
-      };
+      // Don't add articleLink if url already exists
+      if (!article.url) {
+        return {
+          ...article,
+          articleLink: article.source
+        };
+      }
+      return article;
     }
   }
 
@@ -154,9 +168,36 @@ class SourceValidationService {
    * @returns {Promise<Array>} Validated articles
    */
   async validateArticles(articles) {
-    return Promise.all(
-      articles.map(article => this.validateArticleSource(article))
-    );
+    try {
+      // Log the start of validation
+      console.log(`Starting source validation for ${articles.length} articles`);
+      const startTime = Date.now();
+      
+      // Process in batches of 10 for better performance
+      const BATCH_SIZE = 10;
+      const validatedArticles = [];
+      
+      for (let i = 0; i < articles.length; i += BATCH_SIZE) {
+        const batch = articles.slice(i, i + BATCH_SIZE);
+        console.log(`Processing validation batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(articles.length/BATCH_SIZE)}`);
+        
+        // Process current batch in parallel
+        const batchResults = await Promise.all(
+          batch.map(article => this.validateArticleSource(article))
+        );
+        
+        validatedArticles.push(...batchResults);
+      }
+      
+      const endTime = Date.now();
+      console.log(`Source validation completed in ${(endTime - startTime)/1000}s for ${articles.length} articles`);
+      
+      return validatedArticles;
+    } catch (error) {
+      console.error('Error in batch article validation:', error);
+      // Return original articles if batch processing fails
+      return articles;
+    }
   }
 
   /**
@@ -174,11 +215,18 @@ class SourceValidationService {
    */
   extractDomain(url) {
     try {
-      if (!url) return null;
-      const domain = new URL(url).hostname;
+      if (!url) return 'unknown';
+      
+      // Handle cases where the source is just a name (e.g., "Yahoo Finance")
+      if (!url.includes('.') && !url.includes('/')) {
+        return url.toLowerCase();
+      }
+
+      const domain = new URL(url).hostname.toLowerCase();
       return domain.replace(/^www\./, '');
     } catch (error) {
-      return null;
+      // If URL parsing fails, treat the input as a source name
+      return url.toLowerCase();
     }
   }
 
@@ -262,12 +310,10 @@ class SourceValidationService {
       sensationalism = 'moderate';
     }
     
+    // Return only the essential bias information without the term arrays
     return {
       politicalBias,
-      sensationalism,
-      leftBiasTerms,
-      rightBiasTerms,
-      sensationalismTerms
+      sensationalism
     };
   }
   

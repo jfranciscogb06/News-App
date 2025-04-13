@@ -3,6 +3,9 @@ const newsService = require('./newsService');
 const openaiService = require('./openaiService');
 const sentimentAnalysisService = require('./sentimentAnalysisService');
 const sourceValidationService = require('./sourceValidationService');
+const queueService = require('./queueService');
+const { LRUCache } = require('lru-cache');
+const logger = require('../utils/logger');
 
 // Create the popular searches table if it doesn't exist
 const createPopularSearchesTableQuery = `
@@ -20,9 +23,7 @@ const createPopularSearchesTableQuery = `
 
 // Create the news cache table if it doesn't exist
 const createNewsCacheTableQuery = `
-  DROP TABLE IF EXISTS news_cache;
-  
-  CREATE TABLE news_cache (
+  CREATE TABLE IF NOT EXISTS news_cache (
     id SERIAL PRIMARY KEY,
     symbol VARCHAR(10) NOT NULL,
     data JSONB NOT NULL,
@@ -45,10 +46,10 @@ db.query(createNewsCacheTableQuery).catch(err => {
 });
 
 // In-memory cache for popular stocks
-const popularStocksCache = new Map();
+const popularStocksCache = new LRUCache({ max: 500, ttl: 1000 * 60 * 30 }); // 30 minutes cache
 
 // Maximum number of concurrent requests
-const MAX_CONCURRENT_REQUESTS = 5;
+const MAX_CONCURRENT_REQUESTS = 10;
 
 // Cache refresh interval in milliseconds (30 minutes)
 const CACHE_REFRESH_INTERVAL = 30 * 60 * 1000;
@@ -60,7 +61,7 @@ const STAGGER_INTERVAL = 5 * 60 * 1000;
 const CACHE_GROUPS = 5;
 
 // Number of popular stocks to maintain
-const POPULAR_STOCKS_COUNT = 100;
+const POPULAR_STOCKS_COUNT = 200;
 
 class CacheService {
   constructor() {
@@ -198,228 +199,204 @@ class CacheService {
   }
 
   /**
-   * Refresh a specific cache group
-   * @param {Object} group - Cache group to refresh
+   * Refresh the cache for a specific group of stocks
+   * @param {Object} group - Group object to refresh
    */
   async refreshCacheGroup(group) {
     try {
-      // Check if we're already at max concurrent operations
-      if (this.activeCachingOperations >= this.maxConcurrentCachingOperations) {
-        console.log(`Delaying refresh of group ${group.id} - too many active caching operations`);
-        
-        // Retry after a short delay with exponential backoff
-        const retryDelay = Math.min(30000 * Math.pow(2, this.activeCachingOperations), 300000); // Max 5 minutes
-        setTimeout(() => this.refreshCacheGroup(group), retryDelay);
+      if (!group || !group.stocks || group.stocks.length === 0) {
+        console.log(`No symbols in group ${group.id} to refresh`);
         return;
       }
       
-      // Increment active operations counter
-      this.activeCachingOperations++;
+      console.log(`Refreshing cache for group ${group.id} with ${group.stocks.length} symbols`);
       
-      console.log(`Starting refresh of cache group ${group.id} with ${group.stocks.length} stocks`);
-      
-      // Clear cache for this group's stocks
-      await this.clearCacheForStocks(group.stocks);
-      
-      // Process in batches to avoid overwhelming the system
-      await this.processBatchesInParallelForGroup(group.stocks, MAX_CONCURRENT_REQUESTS, group.id);
-      
-      // Update last refreshed timestamp
-      group.lastRefreshed = new Date();
-      
-      console.log(`Completed refresh of cache group ${group.id}`);
-      
-      // Decrement active operations counter
-      this.activeCachingOperations--;
-    } catch (error) {
-      console.error(`Error refreshing cache group ${group.id}:`, error);
-      
-      // Decrement active operations counter even if there was an error
-      this.activeCachingOperations--;
-      
-      // Retry after a delay with exponential backoff
-      const retryDelay = Math.min(30000 * Math.pow(2, this.activeCachingOperations), 300000);
-      setTimeout(() => this.refreshCacheGroup(group), retryDelay);
-    }
-  }
-
-  /**
-   * Clear cache for specific stocks
-   * @param {Array<string>} stocks - Array of stock symbols to clear from cache
-   */
-  async clearCacheForStocks(stocks) {
-    try {
-      let memClearedCount = 0;
-      let dbClearedCount = 0;
-      
-      // Clear in-memory cache
-      for (const symbol of stocks) {
-        if (popularStocksCache.has(symbol)) {
-          popularStocksCache.delete(symbol);
-          memClearedCount++;
+      // Use queueService to add a non-blocking job for this group refresh
+      queueService.addJob('caching', async () => {
+        try {
+          await this.processBatchesInParallelForGroup(group.stocks, MAX_CONCURRENT_REQUESTS, group.id);
+          console.log(`Successfully refreshed cache for group ${group.id}`);
+          
+          // Update the last refreshed timestamp
+          const groupData = this.cacheGroups.get(group.id);
+          if (groupData) {
+            groupData.lastRefreshed = new Date();
+            this.cacheGroups.set(group.id, groupData);
+          }
+        } catch (error) {
+          console.error(`Error refreshing cache group ${group.id}:`, error);
         }
-      }
+      }, { group: group.id });
       
-      // Clear PostgreSQL cache
-      if (stocks.length > 0) {
-        const result = await db.query(
-          'DELETE FROM news_cache WHERE symbol = ANY($1)',
-          [stocks]
-        );
-        dbClearedCount = result.rowCount;
-      }
-      
-      if (memClearedCount > 0 || dbClearedCount > 0) {
-        console.log(`Cleared ${memClearedCount} stocks from memory cache and ${dbClearedCount} from PostgreSQL`);
-      }
+      console.log(`Cache refresh for group ${group.id} queued`);
     } catch (error) {
-      console.error('Error clearing cache for stocks:', error);
+      console.error(`Error scheduling cache refresh for group ${group.id}:`, error);
     }
   }
 
   /**
-   * Cache popular stocks in background without blocking
-   */
-  async cachePopularStocksInBackground() {
-    // Run in the next tick to not block initialization
-    process.nextTick(async () => {
-      try {
-        console.log('Starting background caching of popular stocks...');
-        const popularStocks = await this.getTop100PopularStocks();
-        
-        // Process in batches to avoid overwhelming the system
-        await this.processBatchesInParallel(popularStocks, MAX_CONCURRENT_REQUESTS);
-        
-        console.log(`Completed caching ${popularStocksCache.size} popular stocks`);
-      } catch (error) {
-        console.error('Error in background caching:', error);
-      }
-    });
-  }
-
-  /**
-   * Process batches of stocks in parallel with limited concurrency for a specific group
-   * @param {Array<string>} stocks - Array of stock symbols
+   * Process batches of stocks in parallel for a specific group
+   * @param {Array<string>} stocks - Array of stock symbols to process
    * @param {number} concurrency - Maximum number of concurrent requests
-   * @param {number} groupId - Group ID for staggering
+   * @param {number} groupId - Group ID for staggered caching
    */
   async processBatchesInParallelForGroup(stocks, concurrency, groupId) {
-    // Create batches with additional staggering within groups
-    const batches = [];
-    for (let i = 0; i < stocks.length; i += concurrency) {
-      batches.push(stocks.slice(i, i + concurrency));
-    }
+    console.log(`Processing ${stocks.length} stocks for group ${groupId} with concurrency ${concurrency}`);
     
-    // Process each batch with additional staggering
-    for (let i = 0; i < batches.length; i++) {
-      const batch = batches[i];
-      console.log(`Processing batch ${i + 1}/${batches.length} for group ${groupId}...`);
-      
-      // Add additional delay between batches within the same group
-      if (i > 0) {
-        const batchDelay = (groupId * 1000) + (i * 2000); // Progressive delay based on group and batch
-        console.log(`Waiting ${batchDelay/1000} seconds before processing next batch...`);
-        await new Promise(resolve => setTimeout(resolve, batchDelay));
-      }
-      
-      try {
-        // Process all stocks in current batch concurrently
-        await Promise.all(
-          batch.map(symbol => this.cacheStockData(symbol, groupId))
-        );
-      } catch (error) {
-        console.error(`Error processing batch ${i + 1} for group ${groupId}:`, error);
-        // Continue with next batch even if current one fails
-        continue;
-      }
-    }
+    // Map stocks to individual queue jobs (no batching - each stock processed independently)
+    const results = await Promise.allSettled(
+      stocks.map(symbol => 
+        queueService.addJob('caching', async () => {
+          return this.cacheStockData(symbol, null, groupId);
+        }, { symbol, groupId })
+      )
+    );
+    
+    // Count successes and failures
+    const successCount = results.filter(r => r.status === 'fulfilled').length;
+    const failedCount = results.filter(r => r.status === 'rejected').length;
+    
+    console.log(`Group ${groupId} processing complete: ${successCount} succeeded, ${failedCount} failed`);
+    
+    // Log any failures
+    results
+      .filter(r => r.status === 'rejected')
+      .forEach((result, index) => {
+        console.error(`Failed to cache stock ${stocks[index]} for group ${groupId}:`, result.reason);
+      });
   }
 
   /**
-   * Process batches of stocks in parallel with limited concurrency
+   * Process batches of stocks in parallel (not tied to a group)
    * @param {Array<string>} stocks - Array of stock symbols
    * @param {number} concurrency - Maximum number of concurrent requests
    */
   async processBatchesInParallel(stocks, concurrency) {
-    // Create batches
-    const batches = [];
-    for (let i = 0; i < stocks.length; i += concurrency) {
-      batches.push(stocks.slice(i, i + concurrency));
-    }
+    console.log(`Processing ${stocks.length} stocks in parallel with concurrency ${concurrency}`);
     
-    // Process each batch in parallel
-    for (const batch of batches) {
-      console.log(`Processing batch of ${batch.length} stocks...`);
-      
-      // Process all stocks in current batch concurrently
-      await Promise.all(
-        batch.map(symbol => this.cacheStockData(symbol))
-      );
-    }
+    // Map stocks to individual queue jobs (no batching - each stock processed independently)
+    const results = await Promise.allSettled(
+      stocks.map(symbol => 
+        queueService.addJob('caching', async () => {
+          return this.cacheStockData(symbol, null);
+        }, { symbol })
+      )
+    );
+    
+    // Count successes and failures
+    const successCount = results.filter(r => r.status === 'fulfilled').length;
+    const failedCount = results.filter(r => r.status === 'rejected').length;
+    
+    console.log(`Parallel processing complete: ${successCount} succeeded, ${failedCount} failed`);
+    
+    // Log any failures
+    results
+      .filter(r => r.status === 'rejected')
+      .forEach((result, index) => {
+        console.error(`Failed to cache stock ${stocks[index]}:`, result.reason);
+      });
   }
 
   /**
    * Cache data for a single stock with optimized processing
    * @param {string} symbol - Stock symbol
+   * @param {Object|null} preAnalyzedData - Optional pre-analyzed data to cache
    * @param {number} groupId - Group ID for additional staggering (optional)
+   * @returns {Promise<Object>} The cached analysis data
    */
-  async cacheStockData(symbol, groupId = null) {
+  async cacheStockData(symbol, preAnalyzedData = null, groupId = null) {
     try {
       // Skip if already in cache and not expired
       const cachedData = popularStocksCache.get(symbol);
-      if (cachedData && !this.isCacheExpired(cachedData.timestamp)) {
-        return;
+      if (cachedData && !this.isCacheExpired(cachedData.timestamp) && !preAnalyzedData) {
+        logger.info(`Using existing cache for ${symbol}`);
+        return cachedData;
       }
       
-      // Collect and preprocess articles
-      const articles = await newsService.collectAndAnalyzeNews(symbol);
+      let analysis;
       
-      if (!articles || !Array.isArray(articles)) {
-        throw new Error(`No valid articles returned for ${symbol}`);
+      // If pre-analyzed data is provided, use it directly
+      if (preAnalyzedData) {
+        logger.info(`Using pre-analyzed data for ${symbol}`);
+        analysis = {
+          ...preAnalyzedData,
+          timestamp: Date.now()
+        };
+      } else {
+        const startTime = Date.now();
+        logger.info(`Starting full analysis for ${symbol}...`);
+        
+        // Non-blocking job for collecting articles
+        const articlesJob = queueService.addJob('analysis', async () => {
+          logger.info(`Collecting news articles for ${symbol}`);
+          return newsService.collectAndAnalyzeNews(symbol);
+        }, { symbol });
+        
+        // Wait for the articles
+        const articles = await articlesJob;
+        
+        if (!articles || !Array.isArray(articles)) {
+          throw new Error(`No valid articles returned for ${symbol}`);
+        }
+        
+        logger.info(`Retrieved ${articles.length} articles for ${symbol} in ${(Date.now() - startTime)/1000}s`);
+        
+        // Non-blocking job for validating sources
+        const validationJob = queueService.addJob('validation', async () => {
+          logger.info(`Validating sources for ${symbol}'s ${articles.length} articles`);
+          return sourceValidationService.validateArticles(articles);
+        }, { symbol, articleCount: articles.length });
+        
+        // Wait for validation
+        const validatedArticles = await validationJob;
+        
+        logger.info(`Validated ${validatedArticles.length} articles for ${symbol}`);
+        
+        // Non-blocking job for sentiment analysis
+        const sentimentJob = queueService.addJob('analysis', async () => {
+          logger.info(`Performing sentiment analysis for ${symbol}`);
+          return sentimentAnalysisService.analyzeSentimentAndPredict(symbol, validatedArticles);
+        }, { symbol, articleCount: validatedArticles.length });
+        
+        // Wait for sentiment analysis
+        const sentimentAnalysis = await sentimentJob;
+        
+        // Create the complete analysis object
+        analysis = {
+          articles: validatedArticles,
+          count: validatedArticles.length,
+          sentimentAnalysis,
+          timestamp: Date.now(),
+          processingTime: (Date.now() - startTime)/1000
+        };
+        
+        logger.info(`Total processing time for ${symbol}: ${analysis.processingTime}s`);
       }
       
-      // Validate articles in parallel batches
-      const batchSize = 10;
-      const validatedArticles = [];
-      for (let i = 0; i < articles.length; i += batchSize) {
-        const batch = articles.slice(i, i + batchSize);
-        const validatedBatch = await sourceValidationService.validateArticles(batch);
-        validatedArticles.push(...validatedBatch);
+      // Store in memory cache
+      const ttlBase = 30 * 60 * 1000; // 30 minutes base TTL
+      let ttl = ttlBase;
+      
+      // If groupId is provided, add staggered expiration to prevent cache stampede
+      if (groupId !== null) {
+        // Add 1-5 minutes of stagger based on groupId
+        const staggerAmount = ((groupId % 5) + 1) * 60 * 1000;
+        ttl += staggerAmount;
       }
       
-      // Analyze sentiment and predict movement
-      const sentimentAnalysis = await sentimentAnalysisService.analyzeSentimentAndPredict(symbol, validatedArticles);
+      popularStocksCache.set(symbol, analysis, ttl);
+      logger.info(`Cached ${symbol} in memory with TTL of ${Math.round(ttl/60000)} minutes`);
       
-      // Create the complete analysis object
-      const analysis = {
-        articles: validatedArticles,
-        count: validatedArticles.length,
-        sentimentAnalysis,
-        timestamp: Date.now()
-      };
+      // Store in PostgreSQL (non-blocking)
+      queueService.addJob('caching', async () => {
+        await this.storeInDatabase(symbol, analysis);
+        logger.info(`Stored ${symbol} in PostgreSQL database`);
+      }, { symbol });
       
-      // Store in memory cache with TTL
-      popularStocksCache.set(symbol, analysis);
-      
-      // Calculate staggered TTL based on group ID
-      const baseTtlMinutes = 30;
-      const staggeredTtlMinutes = groupId ? baseTtlMinutes + ((groupId - 1) * 2) : baseTtlMinutes;
-      
-      // Save to PostgreSQL with staggered TTL
-      const expiresAt = new Date();
-      expiresAt.setMinutes(expiresAt.getMinutes() + staggeredTtlMinutes);
-      
-      await db.query(
-        `INSERT INTO news_cache (symbol, data, expires_at)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (symbol) 
-         DO UPDATE SET 
-           data = EXCLUDED.data,
-           expires_at = EXCLUDED.expires_at`,
-        [symbol, analysis, expiresAt]
-      );
+      return analysis;
     } catch (error) {
-      console.error(`Error caching ${symbol}:`, error.message);
+      logger.error(`Error caching data for ${symbol}:`, error.message);
+      throw error;
     }
   }
 
@@ -486,8 +463,15 @@ class CacheService {
     try {
       console.log('Getting popular stocks from OpenAI...');
       
+      // First check if we have cached popular stocks
+      const cachedStocks = popularStocksCache.get('popularStocks');
+      if (cachedStocks && Array.isArray(cachedStocks)) {
+        console.log(`Using ${cachedStocks.length} cached popular stocks`);
+        return cachedStocks;
+      }
+      
       const response = await openaiService.openai.chat.completions.create({
-        model: "gpt-4-1106-preview",
+        model: "gpt-3.5-turbo-0125",
         messages: [
           {
             role: "system",
@@ -523,7 +507,8 @@ Rules:
       });
 
       if (!response?.choices?.[0]?.message?.content) {
-        throw new Error('Invalid or empty response from OpenAI');
+        console.warn('Invalid or empty response from OpenAI, using default popular stocks');
+        return this.getDefaultPopularStocks();
       }
 
       const content = response.choices[0].message.content;
@@ -586,7 +571,7 @@ Rules:
       } catch (error) {
         console.error('Error parsing OpenAI response:', error);
         console.error('Raw content:', content);
-        throw new Error('Invalid response format from OpenAI');
+        return this.getDefaultPopularStocks();
       }
 
       // Validate and normalize stock symbols
@@ -596,16 +581,43 @@ Rules:
         .slice(0, POPULAR_STOCKS_COUNT);
 
       if (stocks.length === 0) {
-        throw new Error('No valid stock symbols found in OpenAI response');
+        console.warn('No valid stock symbols found in OpenAI response, using default popular stocks');
+        return this.getDefaultPopularStocks();
       }
+
+      // Cache the popular stocks for future use
+      popularStocksCache.set('popularStocks', stocks, 24 * 60 * 60 * 1000); // 24 hours
 
       console.log(`Retrieved ${stocks.length} popular stocks from OpenAI`);
       return stocks;
     } catch (error) {
       console.error('Error getting popular stocks from OpenAI:', error);
-      // Fallback to search history if OpenAI fails
-      return this.getPopularStocksFromSearchHistory();
+      // Try search history first, then fall back to defaults
+      const historyStocks = await this.getPopularStocksFromSearchHistory();
+      if (historyStocks && historyStocks.length > 0) {
+        return historyStocks;
+      }
+      return this.getDefaultPopularStocks();
     }
+  }
+
+  /**
+   * Get a default list of popular stocks when other methods fail
+   * @returns {Array<string>} Array of default stock symbols
+   */
+  getDefaultPopularStocks() {
+    // Default list of popular stocks to use when API calls fail
+    const defaultStocks = [
+      'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'TSLA', 'NVDA', 'JPM', 'V', 'PG',
+      'UNH', 'HD', 'BAC', 'MA', 'XOM', 'DIS', 'CMCSA', 'ADBE', 'NFLX', 'INTC',
+      'VZ', 'CSCO', 'PFE', 'CRM', 'AVGO', 'PEP', 'ABT', 'CVX', 'TMO', 'KO',
+      'ACN', 'MRK', 'COST', 'ABBV', 'WMT', 'MDT', 'MCD', 'ORCL', 'DHR', 'QCOM',
+      'NKE', 'NEE', 'LLY', 'TXN', 'IBM', 'AMD', 'T', 'PM', 'AMGN', 'HON',
+      'LIN', 'UPS', 'SBUX', 'UNP', 'LOW', 'BMY', 'GILD', 'PYPL', 'MMM', 'INTU'
+    ];
+    
+    console.log(`Using ${defaultStocks.length} default popular stocks`);
+    return defaultStocks;
   }
 
   /**
@@ -717,6 +729,51 @@ Rules:
       return true;
     } catch (error) {
       console.error('Cache clearing error:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Store analysis data in the database
+   * @param {string} symbol - Stock symbol
+   * @param {Object} analysis - Analysis data to store
+   */
+  async storeInDatabase(symbol, analysis) {
+    try {
+      // Save to PostgreSQL with 30-minute TTL
+      const expiresAt = new Date();
+      expiresAt.setMinutes(expiresAt.getMinutes() + 30); // 30 minutes TTL
+      
+      await db.query(
+        `INSERT INTO news_cache (symbol, data, expires_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (symbol) 
+         DO UPDATE SET 
+           data = EXCLUDED.data,
+           expires_at = EXCLUDED.expires_at`,
+        [symbol, analysis, expiresAt]
+      );
+    } catch (error) {
+      logger.error(`Error storing data for ${symbol} in database:`, error.message);
+      // Don't throw here - we want to continue even if DB storage fails
+    }
+  }
+
+  async clearSymbolCache(symbol) {
+    try {
+      // Clear from memory cache
+      popularStocksCache.delete(symbol);
+      
+      // Clear from database
+      await db.query(
+        `DELETE FROM news_cache WHERE symbol = $1`,
+        [symbol]
+      );
+      
+      logger.info(`Cleared cache for symbol ${symbol}`);
+      return true;
+    } catch (error) {
+      logger.error(`Error clearing cache for symbol ${symbol}:`, error.message);
       return false;
     }
   }

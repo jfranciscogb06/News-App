@@ -3,6 +3,7 @@ const cheerio = require('cheerio');
 const config = require('../config/config');
 const openaiService = require('./openaiService');
 const sourceValidationService = require('./sourceValidationService');
+const SerpApiService = require('./serpApiService');
 
 class NewsService {
   constructor() {
@@ -178,94 +179,81 @@ class NewsService {
     }
   }
 
-  async getGoogleNewsArticles(query, maxArticles = 5) {
+  async getGoogleNewsArticles(query, maxArticles = 20) {
     try {
-      console.log(`Fetching news for query: ${query}`);
-      const response = await axios.get('https://serpapi.com/search.json', {
-        params: {
-          q: query,
-          engine: 'google',
-          google_domain: 'google.com',
-          gl: 'us',
-          hl: 'en',
-          tbm: 'nws',
-          num: maxArticles * 2,
-          api_key: config.serpapi.apiKey
-        }
-      });
-
-      console.log('SerpAPI response status:', response.status);
-
-      if (!response.data?.news_results) {
-        console.log('No news_results found in response');
-        return [];
-      }
-
+      const serpApi = new SerpApiService(config.serpapi.apiKey);
+      const articles = await serpApi.searchNews(query, maxArticles * 2);
+      
       // Filter and process articles
-      const processedArticles = response.data.news_results
+      const processedArticles = articles
         .filter(article => {
-          const text = `${article.title} ${article.snippet || ''}`.toLowerCase();
-          const symbol = query.split(' ')[0].toUpperCase();
+          // Basic validation
+          if (!article.title || !article.url) return false;
           
-          // More lenient filtering criteria
-          const hasSymbol = text.includes(symbol.toLowerCase()) || 
-                           text.includes(`$${symbol.toLowerCase()}`);
+          // Skip social media sources
+          if (article.url.match(/facebook\.com|twitter\.com|youtube\.com|instagram\.com|tiktok\.com/i)) {
+            return false;
+          }
           
-          const isValid = hasSymbol &&
-            article.title &&
-            article.link &&
-            !article.link.includes('youtube.com') &&
-            !article.link.includes('facebook.com') &&
-            !article.link.includes('twitter.com');
-
-          console.log(`Article filtering for "${article.title}":`, {
-            hasSymbol,
-            hasRequiredFields: !!(article.title && article.link),
-            isValid
-          });
+          // Ensure article is in English
+          if (!this.isEnglishContent(article.title)) return false;
           
-          return isValid;
+          return true;
         })
-        .map(article => ({
-          title: article.title,
-          description: article.snippet || '',
-          url: article.link,
-          publishedAt: article.date || new Date().toISOString(),
-          source: article.source || 'Unknown',
-          content: article.snippet || article.title,
-          relevanceScore: this.calculateRelevanceScore(article, query.split(' ')[0])
-        }))
+        .map(article => {
+          const relevanceScore = this.calculateRelevanceScore(article, query);
+          return {
+            ...article,
+            relevanceScore
+          };
+        })
+        .filter(article => article.relevanceScore > 0)
+        .sort((a, b) => b.relevanceScore - a.relevanceScore)
         .slice(0, maxArticles);
 
-      console.log(`Processed ${processedArticles.length} articles after filtering`);
+      console.log(`Found ${processedArticles.length} relevant articles for query: ${query}`);
       return processedArticles;
     } catch (error) {
-      console.error('SerpAPI error:', error.message);
-      if (error.response) {
-        console.error('Error response:', error.response.data);
-      }
+      console.error('Error fetching news articles:', error);
       return [];
     }
   }
 
-  calculateRelevanceScore(article, symbol) {
+  isEnglishContent(text) {
+    // Simple check for English content
+    const nonEnglishPattern = /[\u0600-\u06FF\u0750-\u077F\u0980-\u09FF\u0A00-\u0A7F\u0A80-\u0AFF\u0B00-\u0B7F\u0B80-\u0BFF\u0C00-\u0C7F\u0C80-\u0CFF\u0D00-\u0D7F\u0D80-\u0DFF\u0E00-\u0E7F\u0E80-\u0EFF\u0F00-\u0FFF\u1000-\u109F\u1100-\u11FF\u1200-\u137F\u1380-\u139F\u13A0-\u13FF\u1400-\u167F\u1680-\u169F\u16A0-\u16FF\u1700-\u171F\u1720-\u173F\u1740-\u175F\u1760-\u177F\u1780-\u17FF\u1800-\u18AF\u1900-\u194F\u1950-\u197F\u1980-\u19DF\u19E0-\u19FF\u1A00-\u1A1F\u1A20-\u1AAF\u1B00-\u1B7F\u1B80-\u1BBF\u1BC0-\u1BFF\u1C00-\u1C4F\u1C50-\u1C7F\u1C80-\u1C8F\u1C90-\u1CBF\u1CC0-\u1CCF\u1CD0-\u1CFF\u1D00-\u1D7F\u1D80-\u1DBF\u1DC0-\u1DFF\u1E00-\u1EFF\u1F00-\u1FFF\u2000-\u206F\u2070-\u209F\u20A0-\u20CF\u20D0-\u20FF\u2100-\u214F\u2150-\u218F\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u2400-\u243F\u2440-\u245F\u2460-\u24FF\u2500-\u257F\u2580-\u259F\u25A0-\u25FF\u2600-\u26FF\u2700-\u27BF\u27C0-\u27EF\u27F0-\u27FF\u2800-\u28FF\u2900-\u297F\u2980-\u29FF\u2A00-\u2AFF\u2B00-\u2BFF\u2C00-\u2C5F\u2C60-\u2C7F\u2C80-\u2CFF\u2D00-\u2D2F\u2D30-\u2D7F\u2D80-\u2DDF\u2DE0-\u2DFF\u2E00-\u2E7F\u2E80-\u2EFF\u2F00-\u2FDF\u2FE0-\u2FEF\u2FF0-\u2FFF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u3100-\u312F\u3130-\u318F\u3190-\u319F\u31A0-\u31BF\u31C0-\u31EF\u31F0-\u31FF\u3200-\u32FF\u3300-\u33FF\u3400-\u4DBF\u4DC0-\u4DFF\u4E00-\u9FFF\uA000-\uA48F\uA490-\uA4CF\uA4D0-\uA4FF\uA500-\uA63F\uA640-\uA69F\uA6A0-\uA6FF\uA700-\uA71F\uA720-\uA7FF\uA800-\uA82F\uA830-\uA83F\uA840-\uA87F\uA880-\uA8DF\uA8E0-\uA8FF\uA900-\uA92F\uA930-\uA95F\uA960-\uA97F\uA980-\uA9DF\uA9E0-\uA9FF\uAA00-\uAA5F\uAA60-\uAA7F\uAA80-\uAADF\uAAE0-\uAAFF\uAB00-\uAB2F\uAB30-\uAB6F\uAB70-\uABBF\uABC0-\uABFF\uAC00-\uD7AF\uD7B0-\uD7FF\uD800-\uDB7F\uDB80-\uDBFF\uDC00-\uDFFF\uE000-\uF8FF\uF900-\uFAFF\uFB00-\uFB4F\uFB50-\uFDFF\uFE00-\uFE0F\uFE10-\uFE1F\uFE20-\uFE2F\uFE30-\uFE4F\uFE50-\uFE6F\uFE70-\uFEFF\uFF00-\uFFEF]/;
+    return !nonEnglishPattern.test(text);
+  }
+
+  calculateRelevanceScore(article, query) {
     let score = 0;
-    const text = `${article.title} ${article.description || ''} ${article.content || ''}`.toLowerCase();
+    const queryTerms = query.toLowerCase().split(/\s+/);
+    const stockSymbol = queryTerms[0].toUpperCase();
     
-    // Title relevance
-    if (article.title.toLowerCase().includes(symbol.toLowerCase())) score += 2;
+    // Check title
+    if (article.title) {
+      const titleLower = article.title.toLowerCase();
+      if (titleLower.includes(stockSymbol.toLowerCase())) score += 2;
+      queryTerms.forEach(term => {
+        if (titleLower.includes(term)) score += 1;
+      });
+    }
     
-    // Content relevance
-    const symbolCount = (text.match(new RegExp(symbol.toLowerCase(), 'g')) || []).length;
-    score += Math.min(symbolCount, 3); // Cap at 3 for multiple mentions
+    // Check content
+    if (article.content) {
+      const contentLower = article.content.toLowerCase();
+      if (contentLower.includes(stockSymbol.toLowerCase())) score += 1;
+      queryTerms.forEach(term => {
+        if (contentLower.includes(term)) score += 0.5;
+      });
+    }
     
-    // Source credibility
-    if (this.isCredibleSource(article.source)) score += 1;
-    
-    // Recency bonus
-    const daysOld = (new Date() - new Date(article.publishedAt)) / (1000 * 60 * 60 * 24);
-    if (daysOld < 1) score += 2;
-    else if (daysOld < 7) score += 1;
+    // Check for financial terms
+    const financialTerms = ['stock', 'market', 'price', 'shares', 'trading', 'investors', 'earnings', 'revenue', 'growth', 'analyst'];
+    const text = `${article.title} ${article.content}`.toLowerCase();
+    financialTerms.forEach(term => {
+      if (text.includes(term)) score += 0.5;
+    });
     
     return score;
   }
@@ -293,56 +281,41 @@ class NewsService {
 
   async getArticleDetails(url, article) {
     try {
-      const response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        },
-        timeout: 10000
-      }).catch(e => null);
+      // First validate the source
+      const validatedArticle = await sourceValidationService.validateArticleSource(article);
       
-      if (!response) return article;
+      // Get the article content from the description or snippet
+      const articleContent = article.description || article.content || article.snippet || '';
       
-      const $ = cheerio.load(response.data);
-      
-      // Try to extract article content
-      // Common selectors for article content
-      const possibleContentSelectors = [
-        'article', 
-        '.article-content', 
-        '.article-body', 
-        '.story-body',
-        '.entry-content',
-        '.post-content',
-        '#article-body',
-        '.story__content',
-        '.content-body'
-      ];
-
-      let content = '';
-      for (const selector of possibleContentSelectors) {
-        const element = $(selector).first();
-        if (element.length) {
-          content = element.text().trim();
-          break;
+      // Only generate a summary if we have content to summarize
+      let summary = articleContent;
+      if (articleContent && articleContent.length > 0) {
+        try {
+          summary = await openaiService.generateSummary(article.title, articleContent);
+        } catch (summaryError) {
+          console.error('Error generating summary:', summaryError);
+          // Keep the original content if summary generation fails
         }
       }
 
-      // If no content found, use the original snippet
-      if (!content) {
-        content = article.content || article.description;
-      }
-      
-      // Try to scrape the date
-      const date = await this.scrapeArticleDate(url);
-      
       return {
-        ...article,
-        content: content,
-        publishedAt: date || article.publishedAt
+        ...validatedArticle,
+        content: summary,
+        description: articleContent, // Keep the original description
+        url: url || article.url || article.link,
+        publishedAt: article.publishedAt || await this.scrapeArticleDate(url),
+        relevanceScore: this.calculateRelevanceScore(article, article.title)
       };
     } catch (error) {
-      console.error('Article details error:', error.message);
-      return article;
+      console.error('Error getting article details:', error);
+      return {
+        ...article,
+        content: article.description || article.content || article.snippet || article.title,
+        description: article.description || article.content || article.snippet || '',
+        url: url || article.url || article.link,
+        publishedAt: article.publishedAt || await this.scrapeArticleDate(url),
+        relevanceScore: this.calculateRelevanceScore(article, article.title)
+      };
     }
   }
 
@@ -350,49 +323,101 @@ class NewsService {
    * Collect news articles for a stock symbol
    * @param {string} symbol - Stock symbol
    * @param {number} maxArticles - Maximum number of articles to collect
+   * @param {string} analysisDate - Optional analysis date for historical analysis
+   * @param {string} ignoreAfter - Optional date to ignore articles after
    * @returns {Promise<Object>} Collected articles and metadata
    */
-  async collectAndAnalyzeNews(symbol, maxArticles = 20) {
+  async collectAndAnalyzeNews(symbol, maxArticles = 20, analysisDate = null, ignoreAfter = null) {
     try {
       console.log(`Collecting news for symbol: ${symbol}`);
+      if (analysisDate) {
+        console.log(`Historical analysis mode - Analysis date: ${analysisDate}, Ignore after: ${ignoreAfter || 'none'}`);
+      }
+
       const searchQueries = [
-        `${symbol} stock`,
+        `${symbol} stock price`,
         `${symbol} stock news`,
-        `${symbol} company news`,
-        `${symbol} financial news`
+        `${symbol} earnings`,
+        `${symbol} financial results`
       ];
 
+      // Execute all queries in parallel
+      console.log(`Executing ${searchQueries.length} search queries in parallel...`);
       const queryPromises = searchQueries.map(query => 
         this.getGoogleNewsArticles(query, Math.ceil(maxArticles / searchQueries.length))
       );
 
-      console.log(`Executing ${searchQueries.length} search queries...`);
       const results = await Promise.all(queryPromises);
       console.log(`Received results from all queries`);
       
       const allArticles = results.flat();
-      console.log(`Total articles before deduplication: ${allArticles.length}`);
+      console.log(`Total articles before filtering: ${allArticles.length}`);
       
       if (allArticles.length === 0) {
         console.log('No articles found from any query');
         return [];
       }
 
-      const uniqueArticles = this.deduplicateArticles(allArticles);
+      // Filter articles based on dates if in historical mode
+      let dateFilteredArticles = allArticles;
+      if (analysisDate) {
+        const analysisDateObj = new Date(analysisDate);
+        const ignoreAfterObj = ignoreAfter ? new Date(ignoreAfter) : null;
+        
+        dateFilteredArticles = allArticles.filter(article => {
+          const articleDate = new Date(article.publishedAt);
+          
+          // Keep articles that are:
+          // 1. Not older than 30 days before the analysis date (increased from 7)
+          // 2. Not newer than the ignoreAfter date (if specified)
+          const isWithinTimeframe = articleDate >= new Date(analysisDateObj.getTime() - 30 * 24 * 60 * 60 * 1000) &&
+                                  articleDate <= analysisDateObj;
+          
+          const isBeforeIgnoreDate = !ignoreAfterObj || articleDate <= ignoreAfterObj;
+          
+          return isWithinTimeframe && isBeforeIgnoreDate;
+        });
+        
+        console.log(`Articles after date filtering: ${dateFilteredArticles.length}`);
+      }
+
+      // Initial filtering based on title and content relevance
+      const filteredArticles = dateFilteredArticles.filter(article => {
+        const titleLower = article.title.toLowerCase();
+        const contentLower = (article.description || article.content || '').toLowerCase();
+        const symbolLower = symbol.toLowerCase();
+        
+        // Must have the stock symbol in either title or content
+        const hasSymbol = titleLower.includes(symbolLower) || 
+                         titleLower.includes(`$${symbolLower}`) ||
+                         contentLower.includes(symbolLower) ||
+                         contentLower.includes(`$${symbolLower}`);
+                         
+        // Must have at least one relevant keyword in either title or content
+        const relevantKeywords = /(stock|share|price|market|trading|earnings|revenue|profit|growth|decline|up|down|rises|falls|jumps|drops|analysis|forecast|target|rating|upgrade|downgrade|buy|sell|hold|performance|report|quarter|guidance|outlook)/i;
+        const hasRelevantKeyword = relevantKeywords.test(titleLower) || relevantKeywords.test(contentLower);
+        
+        return hasSymbol && hasRelevantKeyword;
+      });
+
+      console.log(`Articles after initial filtering: ${filteredArticles.length}`);
+
+      // Deduplicate articles
+      const uniqueArticles = this.deduplicateArticles(filteredArticles);
       console.log(`Articles after deduplication: ${uniqueArticles.length}`);
       
+      // Sort by date and relevance
       const sortedArticles = uniqueArticles
         .sort((a, b) => {
-          // Sort by date if available
+          // First sort by date
           const dateA = new Date(a.publishedAt || Date.now());
           const dateB = new Date(b.publishedAt || Date.now());
           const recencyDiff = dateB - dateA;
           
-          // If dates are the same, sort by relevance score
-          if (recencyDiff === 0) {
-            return (b.relevanceScore || 0) - (a.relevanceScore || 0);
-          }
-          return recencyDiff;
+          if (recencyDiff !== 0) return recencyDiff;
+          
+          // Then by relevance score
+          return (b.relevanceScore || 0) - (a.relevanceScore || 0);
         })
         .slice(0, maxArticles);
 
