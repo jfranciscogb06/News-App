@@ -330,102 +330,91 @@ class NewsService {
   async collectAndAnalyzeNews(symbol, maxArticles = 20, analysisDate = null, ignoreAfter = null) {
     try {
       console.log(`Collecting news for symbol: ${symbol}`);
-      if (analysisDate) {
-        console.log(`Historical analysis mode - Analysis date: ${analysisDate}, Ignore after: ${ignoreAfter || 'none'}`);
-      }
-
-      const searchQueries = [
-        `${symbol} stock price`,
-        `${symbol} stock news`,
+      
+      // Define search queries
+      const queries = [
         `${symbol} earnings`,
+        `${symbol} stock news`,
+        `${symbol} stock price`,
         `${symbol} financial results`
       ];
-
+      
+      console.log(`Executing ${queries.length} search queries in parallel...`);
+      
       // Execute all queries in parallel
-      console.log(`Executing ${searchQueries.length} search queries in parallel...`);
-      const queryPromises = searchQueries.map(query => 
-        this.getGoogleNewsArticles(query, Math.ceil(maxArticles / searchQueries.length))
+      const allResults = await Promise.all(
+        queries.map(query => this.getGoogleNewsArticles(query, maxArticles))
       );
-
-      const results = await Promise.all(queryPromises);
-      console.log(`Received results from all queries`);
       
-      const allArticles = results.flat();
-      console.log(`Total articles before filtering: ${allArticles.length}`);
+      console.log('Received results from all queries');
       
-      if (allArticles.length === 0) {
-        console.log('No articles found from any query');
-        return [];
-      }
-
-      // Filter articles based on dates if in historical mode
-      let dateFilteredArticles = allArticles;
-      if (analysisDate) {
-        const analysisDateObj = new Date(analysisDate);
-        const ignoreAfterObj = ignoreAfter ? new Date(ignoreAfter) : null;
-        
-        dateFilteredArticles = allArticles.filter(article => {
-          const articleDate = new Date(article.publishedAt);
-          
-          // Keep articles that are:
-          // 1. Not older than 30 days before the analysis date (increased from 7)
-          // 2. Not newer than the ignoreAfter date (if specified)
-          const isWithinTimeframe = articleDate >= new Date(analysisDateObj.getTime() - 30 * 24 * 60 * 60 * 1000) &&
-                                  articleDate <= analysisDateObj;
-          
-          const isBeforeIgnoreDate = !ignoreAfterObj || articleDate <= ignoreAfterObj;
-          
-          return isWithinTimeframe && isBeforeIgnoreDate;
-        });
-        
-        console.log(`Articles after date filtering: ${dateFilteredArticles.length}`);
-      }
-
-      // Initial filtering based on title and content relevance
-      const filteredArticles = dateFilteredArticles.filter(article => {
-        const titleLower = article.title.toLowerCase();
-        const contentLower = (article.description || article.content || '').toLowerCase();
-        const symbolLower = symbol.toLowerCase();
-        
-        // Must have the stock symbol in either title or content
-        const hasSymbol = titleLower.includes(symbolLower) || 
-                         titleLower.includes(`$${symbolLower}`) ||
-                         contentLower.includes(symbolLower) ||
-                         contentLower.includes(`$${symbolLower}`);
-                         
-        // Must have at least one relevant keyword in either title or content
-        const relevantKeywords = /(stock|share|price|market|trading|earnings|revenue|profit|growth|decline|up|down|rises|falls|jumps|drops|analysis|forecast|target|rating|upgrade|downgrade|buy|sell|hold|performance|report|quarter|guidance|outlook)/i;
-        const hasRelevantKeyword = relevantKeywords.test(titleLower) || relevantKeywords.test(contentLower);
-        
-        return hasSymbol && hasRelevantKeyword;
+      // Combine and deduplicate results
+      let articles = [];
+      allResults.forEach((result, index) => {
+        if (result && result.length > 0) {
+          console.log(`Found ${result.length} relevant articles for query: ${queries[index]}`);
+          articles.push(...result);
+        }
       });
-
-      console.log(`Articles after initial filtering: ${filteredArticles.length}`);
-
-      // Deduplicate articles
-      const uniqueArticles = this.deduplicateArticles(filteredArticles);
-      console.log(`Articles after deduplication: ${uniqueArticles.length}`);
       
-      // Sort by date and relevance
-      const sortedArticles = uniqueArticles
-        .sort((a, b) => {
-          // First sort by date
-          const dateA = new Date(a.publishedAt || Date.now());
-          const dateB = new Date(b.publishedAt || Date.now());
-          const recencyDiff = dateB - dateA;
-          
-          if (recencyDiff !== 0) return recencyDiff;
-          
-          // Then by relevance score
-          return (b.relevanceScore || 0) - (a.relevanceScore || 0);
+      // Remove duplicates
+      articles = this.deduplicateArticles(articles);
+      console.log(`Total articles before filtering: ${articles.length}`);
+      
+      // Filter by date if specified
+      if (analysisDate || ignoreAfter) {
+        articles = articles.filter(article => {
+          const pubDate = new Date(article.publishedAt);
+          if (analysisDate && pubDate < new Date(analysisDate)) return false;
+          if (ignoreAfter && pubDate > new Date(ignoreAfter)) return false;
+          return true;
+        });
+      }
+      
+      // Process articles in parallel with error handling
+      const processedArticles = await Promise.all(
+        articles.map(async article => {
+          try {
+            // Skip article detail fetching for problematic sources
+            const skipDetailFetch = [
+              'investing.com',
+              'reuters.com',
+              'barrons.com',
+              'tipranks.com',
+              'valuewalk.com',
+              'investors.com'
+            ].some(domain => article.url?.includes(domain));
+            
+            if (skipDetailFetch) {
+              return {
+                ...article,
+                content: article.description || article.snippet || '',
+                source: article.source || { name: new URL(article.url).hostname }
+              };
+            }
+            
+            const details = await this.getArticleDetails(article.url, article);
+            return details || article;
+          } catch (error) {
+            // If fetching details fails, return the original article
+            return article;
+          }
         })
-        .slice(0, maxArticles);
-
-      console.log(`Final number of articles: ${sortedArticles.length}`);
-      return sortedArticles;
+      );
+      
+      // Filter out articles without content
+      const validArticles = processedArticles.filter(article => 
+        article && (article.content || article.description || article.snippet)
+      );
+      
+      if (validArticles.length === 0) {
+        throw new Error('No valid articles found after processing');
+      }
+      
+      return validArticles;
     } catch (error) {
-      console.error('News collection error:', error.message);
-      return [];
+      console.log('News collection error:', error.message);
+      throw error;
     }
   }
 

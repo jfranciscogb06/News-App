@@ -232,52 +232,35 @@ class SerpApiService {
   }
 
   calculateRelevanceScore(article, query) {
-    let score = 5; // Base score
-    const queryTerms = query.toLowerCase().split(' ');
-    const title = (article.title || '').toLowerCase();
-    const description = (article.description || '').toLowerCase();
-    const content = [title, description].join(' ');
+    let score = 0;
+    const title = article.title || '';
+    const description = article.description || '';
     
-    // Title relevance (0-3 points)
-    if (title.includes(queryTerms[0])) score += 2;
-    queryTerms.slice(1).forEach(term => {
+    // Check for exact match in title
+    if (title.includes(query)) {
+      score += 3;
+    }
+    
+    // Check for exact match in description
+    if (description.includes(query)) {
+      score += 2;
+    }
+    
+    // Check for individual query terms
+    const queryTerms = query.split(' ');
+    queryTerms.forEach(term => {
+      if (title.includes(term)) score += 1;
+      if (description.includes(term)) score += 0.5;
+    });
+    
+    // Check for stock-specific terms
+    const stockTerms = ['stock', 'share', 'price', 'market', 'trading', 'earnings'];
+    stockTerms.forEach(term => {
       if (title.includes(term)) score += 0.5;
+      if (description.includes(term)) score += 0.2;
     });
-
-    // Source quality (0-2 points)
-    const domain = this.extractDomain(article.url || article.source?.url);
-    if (this.sourceTiers.premium.some(s => domain?.includes(s))) score += 2;
-    else if (this.sourceTiers.trusted.some(s => domain?.includes(s))) score += 1.5;
-    else if (this.sourceTiers.reliable.some(s => domain?.includes(s))) score += 1;
-    else if (this.sourceTiers.general.some(s => domain?.includes(s))) score += 0.5;
-
-    // Content value indicators (0-2 points)
-    let valueScore = 0;
-    Object.values(this.contentValueIndicators).forEach(keywords => {
-      keywords.forEach(keyword => {
-        if (content.includes(keyword.toLowerCase())) valueScore += 0.2;
-      });
-    });
-    score += Math.min(2, valueScore);
     
-    // Content quality (0-2 points)
-    const contentLength = (article.content || description || '').length;
-    if (contentLength >= this.qualityIndicators.idealLength) score += 2;
-    else if (contentLength >= this.qualityIndicators.goodLength) score += 1;
-    
-    // Recency (0-3 points)
-    const publishedDate = new Date(article.publishedAt);
-    const now = new Date();
-    const hoursSincePublished = (now - publishedDate) / (1000 * 60 * 60);
-    
-    if (hoursSincePublished < 6) score += 3;
-    else if (hoursSincePublished < 12) score += 2.5;
-    else if (hoursSincePublished < 24) score += 2;
-    else if (hoursSincePublished < 48) score += 1;
-    else if (hoursSincePublished > 168) score -= 1; // Penalize week-old news
-    
-    // Normalize score between 1 and 10
-    return Math.min(10, Math.max(1, score));
+    return Math.min(10, score);
   }
 
   async searchNews(query, maxResults = 20) {

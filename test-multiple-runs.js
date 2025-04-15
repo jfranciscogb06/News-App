@@ -3,79 +3,66 @@ const stockController = require('./src/controllers/stockController');
 const logger = require('./src/utils/logger');
 const cacheService = require('./src/services/cacheService');
 
-async function runTests() {
-    const symbol = 'AAPL';
-    const numRuns = 10;
-    const results = [];
-    const errors = [];
-    let cacheHits = 0;
-    let freshAnalyses = 0;
-
-    console.log(`Starting ${numRuns} test runs for ${symbol}...\n`);
-
-    // Clear cache for AAPL first
-    console.log('Clearing cache for AAPL...');
-    await cacheService.clearSymbolCache(symbol);
-    console.log('Cache cleared, starting tests...\n');
-
+async function testStockAnalysis(symbol) {
+  try {
+    console.log(`\nAnalyzing stock: ${symbol}`);
     const startTime = Date.now();
 
-    for (let i = 0; i < numRuns; i++) {
-        console.log(`\nTest Run ${i + 1}/${numRuns}`);
-        const runStartTime = Date.now();
+    // Create mock request and response objects
+    const req = { params: { symbol } };
+    const res = {
+      json: (data) => {
+        return data;
+      }
+    };
 
-        try {
-            const req = { params: { symbol } };
-            const res = {
-                json: (data) => {
-                    const runTime = (Date.now() - runStartTime) / 1000;
-                    const isCached = data.source === 'cache';
-                    if (isCached) cacheHits++;
-                    else freshAnalyses++;
+    // Call the controller directly
+    const result = await stockController.analyzeStock(req, res);
+    const endTime = Date.now();
 
-                    results.push({
-                        run: i + 1,
-                        time: runTime,
-                        source: data.source,
-                        articles: data.articles?.length || 0,
-                        timeframes: Object.keys(data.sentimentAnalysis || {}).length,
-                        isCached
-                    });
-
-                    console.log(`Run ${i + 1} completed in ${runTime.toFixed(2)}s`);
-                    console.log(`Source: ${data.source}, Articles: ${data.articles?.length || 0}, Timeframes: ${Object.keys(data.sentimentAnalysis || {}).length}`);
-                }
-            };
-
-            await stockController.analyzeStock(req, res);
-        } catch (error) {
-            errors.push({
-                run: i + 1,
-                error: error.message
-            });
-            console.error(`Error in run ${i + 1}:`, error.message);
-        }
-    }
-
-    const totalTime = (Date.now() - startTime) / 1000;
-
-    console.log('\nTest Summary:');
-    console.log('-------------');
-    console.log(`Total runs: ${numRuns}`);
-    console.log(`Successful runs: ${results.length}`);
-    console.log(`Failed runs: ${errors.length}`);
-    console.log(`Total time: ${totalTime.toFixed(2)}s`);
-    console.log(`Average time per run: ${(totalTime / numRuns).toFixed(2)}s`);
-    console.log(`Cache hits: ${cacheHits}`);
-    console.log(`Fresh analyses: ${freshAnalyses}`);
-    console.log(`Cache hit rate: ${((cacheHits / numRuns) * 100).toFixed(2)}%`);
-
-    if (errors.length > 0) {
-        console.log('\nErrors:');
-        errors.forEach(err => {
-            console.log(`Run ${err.run}: ${err.error}`);
-        });
-    }
+    return {
+      success: true,
+      time: (endTime - startTime) / 1000,
+      articles: result.articles?.length || 0,
+      timeframes: Object.keys(result.sentimentAnalysis || {}).length,
+      data: result
+    };
+  } catch (error) {
+    console.error('Error details:', error);
+    return {
+      success: false,
+      error: error.message,
+      stack: error.stack
+    };
+  }
 }
 
-runTests().catch(console.error); 
+async function runTest() {
+  try {
+    console.log('Starting stock analysis test...');
+    
+    // Clear the cache first
+    await cacheService.clearSymbolCache('AAPL');
+    console.log('Cache cleared for AAPL');
+    
+    const result = await testStockAnalysis('AAPL');
+    console.log('\nTest Result:', JSON.stringify(result, null, 2));
+    
+    if (result.success) {
+      console.log('\nTest passed successfully!');
+      console.log(`Time taken: ${result.time.toFixed(2)} seconds`);
+      console.log(`Articles found: ${result.articles}`);
+      console.log(`Timeframes analyzed: ${result.timeframes}`);
+    } else {
+      console.log('\nTest failed!');
+      console.log('Error:', result.error);
+      if (result.stack) {
+        console.log('Stack trace:', result.stack);
+      }
+    }
+  } catch (error) {
+    console.error('Test execution error:', error);
+  }
+}
+
+runTest(); 

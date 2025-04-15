@@ -140,10 +140,10 @@ class SentimentAnalysisService {
     
     return articles.filter(article => {
       // Create multiple unique keys to catch different types of duplicates
-      const title = article.title?.toLowerCase() || '';
-      const content = (article.description || article.content || '').toLowerCase();
-      const url = article.url?.toLowerCase() || '';
-      const source = article.source?.name?.toLowerCase() || article.source?.domain?.toLowerCase() || '';
+      const title = article.title || '';
+      const content = (article.description || article.content || '');
+      const url = article.url || '';
+      const source = article.source?.name || article.source?.domain || '';
       
       // Create keys for different matching strategies
       const exactMatchKey = `${title}|${content.substring(0, 200)}`;

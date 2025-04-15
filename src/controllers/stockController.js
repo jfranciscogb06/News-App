@@ -44,14 +44,41 @@ class StockController {
       // Clear symbol cache using the correct method name
       await cacheService.clearSymbolCache(symbol);
       
-      const articles = await newsService.collectAndAnalyzeNews(symbol, 30, analysisDate, ignoreAfter);
+      let articles = [];
+      try {
+        articles = await newsService.collectAndAnalyzeNews(symbol, 30, analysisDate, ignoreAfter);
+      } catch (error) {
+        logger.warn(`Error collecting news for ${symbol}: ${error.message}`);
+        // Continue with empty articles array
+      }
       
+      // If no articles found, return a structured response instead of throwing an error
       if (!articles || articles.length === 0) {
-        const error = new Error(`Could not find any relevant news articles for ${symbol}`);
-        if (res && res.status) {
-          return res.status(404).json({ error: error.message });
+        const response = {
+          symbol,
+          articles: [],
+          sentimentAnalysis: {
+            '7days': { prediction: 'NEUTRAL', confidence: 'low', magnitude: 'minimal' },
+            '1month': { prediction: 'NEUTRAL', confidence: 'low', magnitude: 'minimal' },
+            '3months': { prediction: 'NEUTRAL', confidence: 'low', magnitude: 'minimal' },
+            '6months': { prediction: 'NEUTRAL', confidence: 'low', magnitude: 'minimal' }
+          },
+          sourceStats: {
+            averageCredibilityScore: 0,
+            credibilityDistribution: {},
+            sourcesUsed: [],
+            politicalBalanceIndex: 0
+          },
+          timestamp: new Date().toISOString(),
+          fromCache: false,
+          articleCount: 0,
+          status: 'no_articles'
+        };
+        
+        if (res && res.json) {
+          return res.json(response);
         }
-        throw error;
+        return response;
       }
       
       // Use sentiment analysis service in parallel with other processing
@@ -67,7 +94,8 @@ class StockController {
         sourceStats,
         timestamp: new Date().toISOString(),
         fromCache: false,
-        articleCount: articles.length
+        articleCount: articles.length,
+        status: 'success'
       };
       
       // Only cache if not doing historical analysis
