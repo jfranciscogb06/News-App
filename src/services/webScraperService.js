@@ -2,6 +2,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
 const logger = require('../utils/logger');
+const xml2js = require('xml2js');
 
 class WebScraperService {
   constructor() {
@@ -25,32 +26,104 @@ class WebScraperService {
   }
 
   /**
+   * Calculate relevance score for an article
+   */
+  calculateRelevanceScore(article, symbol) {
+    let score = 0;
+    const symbolLower = symbol.toLowerCase();
+    
+    // Check title
+    if (article.title) {
+      const title = article.title.toLowerCase();
+      // Direct symbol mention
+      if (title.includes(symbolLower)) score += 5;
+      
+      // Company name mentions
+      const companyNames = this.getCompanyNames(symbol);
+      for (const name of companyNames) {
+        if (title.includes(name.toLowerCase())) score += 4;
+      }
+      
+      // Title relevance
+      if (title.includes('stock')) score += 2;
+      if (title.includes('price') || title.includes('market')) score += 2;
+      if (title.includes('earnings') || title.includes('financial')) score += 2;
+      if (title.includes('report') || title.includes('results')) score += 1;
+    }
+    
+    // Check description
+    if (article.description) {
+      const description = article.description.toLowerCase();
+      // Direct symbol mention
+      if (description.includes(symbolLower)) score += 3;
+      
+      // Company name mentions
+      const companyNames = this.getCompanyNames(symbol);
+      for (const name of companyNames) {
+        if (description.includes(name.toLowerCase())) score += 2;
+      }
+    }
+    
+    // Source credibility
+    const source = article.source?.name?.toLowerCase() || '';
+    if (source.includes('yahoo finance')) score += 2;
+    
+    return score;
+  }
+
+  /**
+   * Get company names for a stock symbol
+   */
+  getCompanyNames(symbol) {
+    const companyMap = {
+      'AAPL': ['Apple', 'Apple Inc'],
+      'MSFT': ['Microsoft', 'Microsoft Corporation'],
+      'GOOGL': ['Google', 'Alphabet', 'Alphabet Inc'],
+      'AMZN': ['Amazon', 'Amazon.com'],
+      'META': ['Meta', 'Facebook', 'Meta Platforms'],
+      'TSLA': ['Tesla', 'Tesla Inc'],
+      'NVDA': ['NVIDIA', 'Nvidia Corporation'],
+      'JPM': ['JPMorgan', 'JP Morgan', 'JPMorgan Chase'],
+      'V': ['Visa', 'Visa Inc'],
+      'WMT': ['Walmart', 'Wal-Mart', 'Walmart Inc']
+    };
+    
+    return companyMap[symbol] || [];
+  }
+
+  /**
    * Search for news articles about a stock
    */
   async searchNews(symbol, maxResults = 20) {
     try {
-      const searchQueries = [
-        `${symbol} stock news`,
-        `${symbol} financial results`,
-        `${symbol} earnings report`,
-        `${symbol} company news`
+      const feeds = [
+        `https://finance.yahoo.com/rss/stock?s=${symbol}`,
+        `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${symbol}&region=US&lang=en-US`
       ];
 
       const allArticles = [];
       
-      // Search multiple sources in parallel
-      await Promise.all(searchQueries.map(async query => {
+      // Fetch from multiple feeds in parallel
+      await Promise.all(feeds.map(async feed => {
         try {
-          const articles = await this.searchGoogleNews(query, maxResults / searchQueries.length);
+          const articles = await this.fetchRssFeed(feed, symbol);
           allArticles.push(...articles);
         } catch (error) {
-          logger.error(`Error searching for "${query}":`, error);
+          logger.error(`Error fetching feed ${feed}:`, error);
         }
       }));
 
-      // Deduplicate and sort by relevance
+      // Deduplicate, filter by relevance, and sort by date
       return this.deduplicateArticles(allArticles)
-        .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
+        .filter(article => article.relevanceScore >= 4) // Increase minimum relevance score
+        .sort((a, b) => {
+          // First sort by relevance score
+          if (b.relevanceScore !== a.relevanceScore) {
+            return b.relevanceScore - a.relevanceScore;
+          }
+          // Then by date if scores are equal
+          return new Date(b.publishedAt) - new Date(a.publishedAt);
+        })
         .slice(0, maxResults);
     } catch (error) {
       logger.error('Error in searchNews:', error);
@@ -59,62 +132,71 @@ class WebScraperService {
   }
 
   /**
-   * Search Google News
+   * Fetch and parse RSS feed
    */
-  async searchGoogleNews(query, maxResults) {
+  async fetchRssFeed(feedUrl, symbol) {
     try {
-      const browser = await puppeteer.launch({
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      const response = await axios.get(feedUrl, {
+        timeout: this.timeoutMs,
+        headers: {
+          'User-Agent': this.getRandomUserAgent()
+        }
       });
-      
-      const page = await browser.newPage();
-      await page.setUserAgent(this.getRandomUserAgent());
-      
-      // Navigate to Google News
-      await page.goto(`https://news.google.com/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`);
-      
-      // Wait for articles to load
-      await page.waitForSelector('article');
-      
-      // Extract articles
-      const articles = await page.evaluate(() => {
-        const items = Array.from(document.querySelectorAll('article'));
-        return items.map(item => {
-          const titleElement = item.querySelector('h3');
-          const linkElement = item.querySelector('a');
-          const timeElement = item.querySelector('time');
-          
-          return {
-            title: titleElement?.textContent || '',
-            url: linkElement?.href || '',
-            publishedAt: timeElement?.getAttribute('datetime') || new Date().toISOString(),
-            source: {
-              name: item.querySelector('div[data-n-tid]')?.textContent || ''
-            }
-          };
-        });
+
+      const parser = new xml2js.Parser({
+        explicitArray: false,
+        mergeAttrs: true
       });
-      
-      await browser.close();
-      
-      // Process articles in parallel
+
+      const result = await parser.parseStringPromise(response.data);
+      const items = result.rss.channel.item;
+
+      if (!items) {
+        return [];
+      }
+
+      // Convert feed items to our article format
+      const articles = (Array.isArray(items) ? items : [items]).map(item => {
+        const article = {
+          title: item.title,
+          url: item.link,
+          publishedAt: new Date(item.pubDate).toISOString(),
+          source: {
+            name: 'Yahoo Finance'
+          },
+          description: item.description
+        };
+        
+        // Calculate relevance score immediately based on title and description
+        article.relevanceScore = this.calculateRelevanceScore(article, symbol);
+        return article;
+      });
+
+      // Only process articles that have a minimum relevance score based on title/description
+      const relevantArticles = articles.filter(article => article.relevanceScore >= 3);
+
+      // Process relevant articles in parallel
       const processedArticles = await Promise.all(
-        articles.map(async article => {
+        relevantArticles.map(async article => {
           try {
             const details = await this.getArticleDetails(article);
-            return details || article;
+            if (details) {
+              // Recalculate score with full content
+              details.relevanceScore = this.calculateRelevanceScore(details, symbol);
+              return details;
+            }
+            return article;
           } catch (error) {
             logger.error(`Error processing article: ${error.message}`);
             return article;
           }
         })
       );
-      
+
       return processedArticles;
     } catch (error) {
-      logger.error('Error in searchGoogleNews:', error);
-      throw error;
+      logger.error(`Error fetching RSS feed ${feedUrl}:`, error);
+      return [];
     }
   }
 
@@ -139,28 +221,27 @@ class WebScraperService {
             // Extract content based on common article patterns
             const content = this.extractContent($);
             
-            return {
-              ...article,
-              content: content || article.description || article.snippet,
-              relevanceScore: this.calculateRelevanceScore(article)
-            };
+            // Only update the article if we successfully extracted content
+            if (content && content.length > 0) {
+              return {
+                ...article,
+                content
+              };
+            }
           }
         } catch (error) {
           if (attempt < this.maxRetries - 1) {
             await new Promise(resolve => setTimeout(resolve, this.retryDelay));
             continue;
           }
+          logger.error(`Failed to fetch article details after ${this.maxRetries} attempts:`, error);
         }
       }
 
-      // If all retries failed, use fallback content
-      return {
-        ...article,
-        content: article.description || article.snippet,
-        relevanceScore: this.calculateRelevanceScore(article)
-      };
+      // If all retries failed or no content was extracted, return the original article
+      return article;
     } catch (error) {
-      logger.error(`Error fetching article details: ${error.message}`);
+      logger.error(`Error in getArticleDetails:`, error);
       return article;
     }
   }
@@ -169,58 +250,60 @@ class WebScraperService {
    * Extract content from HTML using common article patterns
    */
   extractContent($) {
-    // Try different common article content selectors
-    const selectors = [
-      'article',
-      '.article-content',
-      '.story-content',
-      '.post-content',
-      '.entry-content',
-      '[itemprop="articleBody"]',
-      '.article-body'
-    ];
+    try {
+      // Try different common article content selectors
+      const selectors = [
+        'article',
+        '.article-content',
+        '.story-content',
+        '.post-content',
+        '.entry-content',
+        '[itemprop="articleBody"]',
+        '.article-body',
+        '.content',
+        '.story-body',
+        '.article__body',
+        '.article-text',
+        '.article-content__body',
+        '.article__content',
+        '.article-body__content'
+      ];
 
-    for (const selector of selectors) {
-      const content = $(selector).text().trim();
-      if (content && content.length > 100) {
-        return content;
+      // First try to find the main content container
+      for (const selector of selectors) {
+        const element = $(selector);
+        if (element.length > 0) {
+          // Remove unwanted elements
+          element.find('script, style, iframe, .advertisement, .ad, .social-share, .related-articles').remove();
+          
+          // Get all paragraphs
+          const paragraphs = element.find('p')
+            .map((_, el) => $(el).text().trim())
+            .get()
+            .filter(text => text.length > 50); // Filter out short paragraphs
+          
+          if (paragraphs.length > 0) {
+            return paragraphs.join('\n\n');
+          }
+        }
       }
-    }
 
-    // Fallback: get all paragraphs
-    const paragraphs = $('p').map((_, el) => $(el).text().trim()).get();
-    return paragraphs.join('\n\n');
-  }
+      // Fallback: get all paragraphs from the body
+      const paragraphs = $('body p')
+        .map((_, el) => $(el).text().trim())
+        .get()
+        .filter(text => text.length > 50);
+      
+      if (paragraphs.length > 0) {
+        return paragraphs.join('\n\n');
+      }
 
-  /**
-   * Calculate relevance score for an article
-   */
-  calculateRelevanceScore(article) {
-    let score = 0;
-    
-    // Title relevance
-    if (article.title) {
-      const title = article.title.toLowerCase();
-      if (title.includes('stock') || title.includes('price')) score += 2;
-      if (title.includes('earnings') || title.includes('financial')) score += 2;
-      if (title.includes('report') || title.includes('results')) score += 1;
+      // If no content was found, return null
+      return null;
+    } catch (error) {
+      logger.error('Error extracting content:', error);
+      return null;
     }
-    
-    // Content relevance
-    if (article.content) {
-      const content = article.content.toLowerCase();
-      if (content.includes('stock') || content.includes('price')) score += 1;
-      if (content.includes('earnings') || content.includes('financial')) score += 1;
-      if (content.includes('report') || content.includes('results')) score += 1;
-    }
-    
-    // Source credibility
-    const source = article.source?.name?.toLowerCase() || '';
-    if (source.includes('reuters') || source.includes('bloomberg')) score += 2;
-    if (source.includes('wsj') || source.includes('ft')) score += 2;
-    if (source.includes('cnbc') || source.includes('yahoo')) score += 1;
-    
-    return score;
   }
 
   /**
