@@ -1,5 +1,6 @@
 const OpenAI = require('openai');
 const config = require('../config/config');
+const logger = require('../utils/logger');
 
 class OpenAIService {
   constructor() {
@@ -7,6 +8,90 @@ class OpenAIService {
       apiKey: config.openai.apiKey,
       baseURL: config.openai.baseURL || 'https://api.openai.com/v1'
     });
+  }
+
+  /**
+   * Clean and parse OpenAI response
+   */
+  cleanAndParseResponse(content) {
+    try {
+      // Clean the content string
+      const cleanContent = content
+        .trim()
+        .replace(/^```json\s*/, '')
+        .replace(/```$/, '')
+        .replace(/\s+/g, ' ')
+        .replace(/`/g, '')
+        .replace(/^[^{]*({.*})[^}]*$/, '$1');
+
+      // Try to parse the cleaned content
+      let parsed;
+      try {
+        parsed = JSON.parse(cleanContent);
+      } catch (e) {
+        // If parsing fails, try to extract JSON from the content
+        const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error('Could not find valid JSON in response');
+        }
+      }
+
+      return parsed;
+    } catch (error) {
+      logger.error('Error parsing OpenAI response:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Validate the structure of the analysis
+   */
+  validateAnalysisStructure(data) {
+    // Validate the basic structure
+    if (!data || typeof data !== 'object') {
+      throw new Error('Invalid analysis data structure');
+    }
+
+    // Required fields for each timeframe analysis
+    const requiredFields = [
+      'sentiment',
+      'confidence',
+      'price_direction',
+      'key_factors',
+      'risks',
+      'opportunities'
+    ];
+
+    // Validate each required field
+    for (const field of requiredFields) {
+      if (!(field in data)) {
+        throw new Error(`Missing required field: ${field}`);
+      }
+    }
+
+    // Validate sentiment
+    if (!['BULLISH', 'BEARISH', 'NEUTRAL'].includes(data.sentiment.toUpperCase())) {
+      throw new Error('Invalid sentiment value');
+    }
+
+    // Validate confidence
+    if (!['HIGH', 'MEDIUM', 'LOW'].includes(data.confidence.toUpperCase())) {
+      throw new Error('Invalid confidence value');
+    }
+
+    // Validate price direction
+    if (!['UP', 'DOWN', 'SIDEWAYS'].includes(data.price_direction.toUpperCase())) {
+      throw new Error('Invalid price direction value');
+    }
+
+    // Validate arrays
+    if (!Array.isArray(data.key_factors) || !Array.isArray(data.risks) || !Array.isArray(data.opportunities)) {
+      throw new Error('Key factors, risks, and opportunities must be arrays');
+    }
+
+    return true;
   }
 
   cleanAndParseResponse(response, context = '') {

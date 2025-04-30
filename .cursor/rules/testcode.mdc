@@ -3,4 +3,4 @@ description:
 globs: 
 alwaysApply: true
 ---
-please before changing anything, do a test
+test any code you added by running the code. if there are any errors then fix them.

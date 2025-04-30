@@ -65,6 +65,14 @@ const POPULAR_STOCKS_COUNT = 200;
 
 class CacheService {
   constructor() {
+    this.db = require('../utils/db');
+    this.queueService = require('./queueService');
+    this.newsService = require('./newsService');
+    this.sentimentAnalysisService = require('./sentimentAnalysisService');
+    this.sourceValidationService = require('./sourceValidationService');
+    this.cacheTimeout = 3600; // 1 hour cache timeout
+    this.maxConcurrentJobs = 3; // Reduced from 5 to 3
+    this.maxArticles = 10; // Maximum articles to process
     // Track active caching operations
     this.activeCachingOperations = 0;
     this.maxConcurrentCachingOperations = 2;
@@ -306,96 +314,50 @@ class CacheService {
    */
   async cacheStockData(symbol, preAnalyzedData = null, groupId = null) {
     try {
-      // Skip if already in cache and not expired
-      const cachedData = popularStocksCache.get(symbol);
-      if (cachedData && !this.isCacheExpired(cachedData.timestamp) && !preAnalyzedData) {
-        logger.info(`Using existing cache for ${symbol}`);
-        return cachedData;
-      }
+      const startTime = Date.now();
       
-      let analysis;
-      
-      // If pre-analyzed data is provided, use it directly
+      // Check if we have pre-analyzed data
       if (preAnalyzedData) {
-        logger.info(`Using pre-analyzed data for ${symbol}`);
-        analysis = {
-          ...preAnalyzedData,
-          timestamp: Date.now()
-        };
-      } else {
-        const startTime = Date.now();
-        logger.info(`Starting full analysis for ${symbol}...`);
-        
-        // Non-blocking job for collecting articles
-        const articlesJob = queueService.addJob('analysis', async () => {
-          logger.info(`Collecting news articles for ${symbol}`);
-          return newsService.collectAndAnalyzeNews(symbol);
-        }, { symbol });
-        
-        // Wait for the articles
-        const articles = await articlesJob;
-        
-        if (!articles || !Array.isArray(articles)) {
-          throw new Error(`No valid articles returned for ${symbol}`);
-        }
-        
-        logger.info(`Retrieved ${articles.length} articles for ${symbol} in ${(Date.now() - startTime)/1000}s`);
-        
-        // Non-blocking job for validating sources
-        const validationJob = queueService.addJob('validation', async () => {
-          logger.info(`Validating sources for ${symbol}'s ${articles.length} articles`);
-          return sourceValidationService.validateArticles(articles);
-        }, { symbol, articleCount: articles.length });
-        
-        // Wait for validation
-        const validatedArticles = await validationJob;
-        
-        logger.info(`Validated ${validatedArticles.length} articles for ${symbol}`);
-        
-        // Non-blocking job for sentiment analysis
-        const sentimentJob = queueService.addJob('analysis', async () => {
-          logger.info(`Performing sentiment analysis for ${symbol}`);
-          return sentimentAnalysisService.analyzeSentimentAndPredict(symbol, validatedArticles);
-        }, { symbol, articleCount: validatedArticles.length });
-        
-        // Wait for sentiment analysis
-        const sentimentAnalysis = await sentimentJob;
-        
-        // Create the complete analysis object
-        analysis = {
-          articles: validatedArticles,
-          count: validatedArticles.length,
-          sentimentAnalysis,
-          timestamp: Date.now(),
-          processingTime: (Date.now() - startTime)/1000
-        };
-        
-        logger.info(`Total processing time for ${symbol}: ${analysis.processingTime}s`);
+        await this.storeInDatabase(symbol, preAnalyzedData);
+        return preAnalyzedData;
       }
-      
-      // Store in memory cache
-      const ttlBase = 30 * 60 * 1000; // 30 minutes base TTL
-      let ttl = ttlBase;
-      
-      // If groupId is provided, add staggered expiration to prevent cache stampede
-      if (groupId !== null) {
-        // Add 1-5 minutes of stagger based on groupId
-        const staggerAmount = ((groupId % 5) + 1) * 60 * 1000;
-        ttl += staggerAmount;
-      }
-      
-      popularStocksCache.set(symbol, analysis, ttl);
-      logger.info(`Cached ${symbol} in memory with TTL of ${Math.round(ttl/60000)} minutes`);
-      
-      // Store in PostgreSQL (non-blocking)
-      queueService.addJob('caching', async () => {
-        await this.storeInDatabase(symbol, analysis);
-        logger.info(`Stored ${symbol} in PostgreSQL database`);
-      }, { symbol });
-      
+
+      // Collect and analyze news articles in parallel
+      const [articles, sourceValidation] = await Promise.all([
+        this.newsService.collectAndAnalyzeNews(symbol, this.maxArticles),
+        this.sourceValidationService.validateArticleSource({ symbol })
+      ]);
+
+      // Take only top 10 articles for analysis
+      const topArticles = articles
+        .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
+        .slice(0, 10);
+
+      // Validate sources in parallel
+      const validatedArticles = await Promise.all(
+        topArticles.map(article => 
+          this.sourceValidationService.validateArticleSource(article)
+        )
+      );
+
+      // Perform sentiment analysis
+      const sentimentAnalysis = await this.sentimentAnalysisService.analyzeSentimentAndPredict(symbol, validatedArticles);
+
+      // Create the complete analysis object
+      const analysis = {
+        articles: validatedArticles,
+        count: validatedArticles.length,
+        sentimentAnalysis,
+        timestamp: Date.now(),
+        processingTime: (Date.now() - startTime) / 1000
+      };
+
+      // Store in database
+      await this.storeInDatabase(symbol, analysis);
+
       return analysis;
     } catch (error) {
-      logger.error(`Error caching data for ${symbol}:`, error.message);
+      console.error(`Error caching data for ${symbol}:`, error);
       throw error;
     }
   }
@@ -427,30 +389,20 @@ class CacheService {
    */
   async getStockData(symbol) {
     try {
-      // Check memory cache first
-      const cachedData = popularStocksCache.get(symbol);
-      if (cachedData && !this.isCacheExpired(cachedData.timestamp)) {
-        return cachedData;
-      }
-
-      // Check PostgreSQL cache
-      const result = await db.query(
-        `SELECT data, expires_at FROM news_cache WHERE symbol = $1`,
+      const result = await this.db.query(
+        `SELECT analysis, expires_at 
+         FROM news_cache 
+         WHERE symbol = $1 
+         AND expires_at > CURRENT_TIMESTAMP`,
         [symbol]
       );
 
       if (result.rows.length > 0) {
-        const { data, expires_at } = result.rows[0];
-        if (new Date(expires_at) > new Date()) {
-          // Update memory cache
-          popularStocksCache.set(symbol, data);
-          return data;
-        }
+        return JSON.parse(result.rows[0].analysis);
       }
-
       return null;
     } catch (error) {
-      console.error(`Error getting cached data for ${symbol}:`, error.message);
+      console.error(`Error retrieving cached data for ${symbol}:`, error);
       return null;
     }
   }
@@ -740,41 +692,33 @@ Rules:
    */
   async storeInDatabase(symbol, analysis) {
     try {
-      // Save to PostgreSQL with 30-minute TTL
-      const expiresAt = new Date();
-      expiresAt.setMinutes(expiresAt.getMinutes() + 30); // 30 minutes TTL
+      const expiresAt = new Date(Date.now() + this.cacheTimeout * 1000);
       
-      await db.query(
-        `INSERT INTO news_cache (symbol, data, expires_at)
+      await this.db.query(
+        `INSERT INTO news_cache (symbol, analysis, expires_at)
          VALUES ($1, $2, $3)
          ON CONFLICT (symbol) 
          DO UPDATE SET 
-           data = EXCLUDED.data,
-           expires_at = EXCLUDED.expires_at`,
-        [symbol, analysis, expiresAt]
+           analysis = $2,
+           expires_at = $3,
+           updated_at = CURRENT_TIMESTAMP`,
+        [symbol, JSON.stringify(analysis), expiresAt]
       );
     } catch (error) {
-      logger.error(`Error storing data for ${symbol} in database:`, error.message);
-      // Don't throw here - we want to continue even if DB storage fails
+      console.error(`Error storing analysis in database for ${symbol}:`, error);
+      throw error;
     }
   }
 
   async clearSymbolCache(symbol) {
     try {
-      // Clear from memory cache
-      popularStocksCache.delete(symbol);
-      
-      // Clear from database
-      await db.query(
+      await this.db.query(
         `DELETE FROM news_cache WHERE symbol = $1`,
         [symbol]
       );
-      
-      logger.info(`Cleared cache for symbol ${symbol}`);
-      return true;
     } catch (error) {
-      logger.error(`Error clearing cache for symbol ${symbol}:`, error.message);
-      return false;
+      console.error(`Error clearing cache for ${symbol}:`, error);
+      throw error;
     }
   }
 }

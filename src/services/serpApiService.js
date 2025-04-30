@@ -1,12 +1,37 @@
-const axios = require('axios');
+const { getJson } = require('serpapi');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const cheerio = require('cheerio');
+const axios = require('axios');
 
 class SerpApiService {
-  constructor(apiKey) {
-    this.apiKey = apiKey;
+  constructor() {
+    this.apiKey = config.serpapi.apiKey;
     this.baseUrl = 'https://serpapi.com/search.json';
+    
+    // Rate limiting configuration
+    this.tokens = 10; // Maximum number of tokens
+    this.refillRate = 1000; // Refill one token every 1000ms (1 second)
+    this.lastRefill = Date.now();
+    this.currentTokens = this.tokens;
+    
+    // List of domains that often return 403 or timeout
+    this.problematicDomains = [
+      'businesswire.com',
+      'researchgate.net',
+      'themalaysianreserve.com',
+      'economictimes.com',
+      'brecorder.com',
+      'finance.yahoo.com',
+      'seekingalpha.com',
+      'investing.com',
+      'marketwatch.com',
+      'barrons.com',
+      'wsj.com',
+      'ft.com',
+      'bloomberg.com',
+      'reuters.com'
+    ];
     
     // Enhanced content quality indicators
     this.qualityIndicators = {
@@ -46,6 +71,27 @@ class SerpApiService {
       fundamental: ['valuation', 'fundamentals', 'balance sheet', 'cash flow'],
       catalyst: ['catalyst', 'announcement', 'launch', 'release']
     };
+  }
+
+  async waitForToken() {
+    const now = Date.now();
+    const timePassed = now - this.lastRefill;
+    const tokensToAdd = Math.floor(timePassed / this.refillRate);
+    
+    if (tokensToAdd > 0) {
+      this.currentTokens = Math.min(this.tokens, this.currentTokens + tokensToAdd);
+      this.lastRefill = now - (timePassed % this.refillRate);
+    }
+    
+    if (this.currentTokens <= 0) {
+      const waitTime = this.refillRate - (now - this.lastRefill);
+      logger.info(`Rate limit reached, waiting ${waitTime}ms before next request`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      return this.waitForToken();
+    }
+    
+    this.currentTokens--;
+    return true;
   }
 
   cleanText(text) {
@@ -265,15 +311,17 @@ class SerpApiService {
 
   async searchNews(query, maxResults = 20) {
     try {
+      await this.waitForToken();
+      
       const response = await axios.get('https://serpapi.com/search.json', {
         params: {
           api_key: this.apiKey,
           q: query,
           tbm: 'nws',
-          num: maxResults * 2, // Get more results to account for filtering
-          gl: 'us', // US results
-          hl: 'en',  // English language
-          tbs: 'qdr:m6,sbd:1' // Last 6 months, sorted by date
+          num: maxResults * 2,
+          gl: 'us',
+          hl: 'en',
+          tbs: 'qdr:m6,sbd:1'
         }
       });
 
@@ -289,8 +337,12 @@ class SerpApiService {
             // Calculate initial relevance score based on title and snippet
             let relevanceScore = this.calculateInitialRelevanceScore(article, query);
             
-            // Skip problematic sources but still include them with basic info
-            if (article.link.includes('finance.yahoo.com') || article.link.includes('seekingalpha.com')) {
+            // Check if the domain is problematic
+            const url = new URL(article.link);
+            const domain = url.hostname;
+            
+            if (this.problematicDomains.some(d => domain.includes(d))) {
+              logger.info(`Skipping problematic domain: ${domain}`);
               return {
                 title: this.cleanText(article.title),
                 description: this.cleanText(article.snippet || ''),
@@ -316,7 +368,7 @@ class SerpApiService {
                 'Upgrade-Insecure-Requests': '1',
                 'Cache-Control': 'max-age=0'
               },
-              timeout: 5000,
+              timeout: 10000, // Increased timeout to 10 seconds
               maxRedirects: 5
             });
 
@@ -652,6 +704,104 @@ class SerpApiService {
     }
     
     return metrics;
+  }
+
+  /**
+   * Search for news articles using SerpAPI
+   */
+  async search(query) {
+    try {
+      logger.info(`Searching news for: ${query}`);
+      
+      const params = {
+        api_key: this.apiKey,
+        engine: 'google',
+        q: query,
+        tbm: 'nws', // News search
+        num: 30, // Number of results
+        gl: 'us', // Country: US
+        hl: 'en' // Language: English
+      };
+
+      const results = await getJson(params);
+      
+      if (!results || !results.news_results) {
+        logger.warn(`No news results found for query: ${query}`);
+        return { news_results: [] };
+      }
+
+      // Process and clean the results
+      const processedResults = results.news_results.map(article => {
+        // Parse the relative date into an actual date
+        const date = this.parseRelativeDate(article.date);
+        
+        return {
+          title: article.title,
+          snippet: article.snippet,
+          source: article.source,
+          date: date.toISOString(),
+          link: article.link,
+          thumbnail: article.thumbnail
+        };
+      });
+
+      logger.info(`Found ${processedResults.length} news articles for: ${query}`);
+      return { news_results: processedResults };
+    } catch (error) {
+      logger.error(`Error searching news: ${error.message}`, {
+        query,
+        error: error.stack
+      });
+      return { news_results: [] };
+    }
+  }
+
+  /**
+   * Parse relative date strings into actual dates
+   */
+  parseRelativeDate(dateStr) {
+    const now = new Date();
+    const str = dateStr.toLowerCase();
+
+    // Handle "X hours ago"
+    const hoursMatch = str.match(/(\d+)\s*hours?\s*ago/);
+    if (hoursMatch) {
+      return new Date(now - parseInt(hoursMatch[1]) * 60 * 60 * 1000);
+    }
+
+    // Handle "X days ago"
+    const daysMatch = str.match(/(\d+)\s*days?\s*ago/);
+    if (daysMatch) {
+      return new Date(now - parseInt(daysMatch[1]) * 24 * 60 * 60 * 1000);
+    }
+
+    // Handle "X weeks ago"
+    const weeksMatch = str.match(/(\d+)\s*weeks?\s*ago/);
+    if (weeksMatch) {
+      return new Date(now - parseInt(weeksMatch[1]) * 7 * 24 * 60 * 60 * 1000);
+    }
+
+    // Handle "X months ago"
+    const monthsMatch = str.match(/(\d+)\s*months?\s*ago/);
+    if (monthsMatch) {
+      const date = new Date(now);
+      date.setMonth(date.getMonth() - parseInt(monthsMatch[1]));
+      return date;
+    }
+
+    // Handle "yesterday"
+    if (str.includes('yesterday')) {
+      return new Date(now - 24 * 60 * 60 * 1000);
+    }
+
+    // Handle "X min ago"
+    const minutesMatch = str.match(/(\d+)\s*min(?:utes?)?\s*ago/);
+    if (minutesMatch) {
+      return new Date(now - parseInt(minutesMatch[1]) * 60 * 1000);
+    }
+
+    // If we can't parse it, return current date
+    return now;
   }
 }
 

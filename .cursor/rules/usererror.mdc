@@ -1,0 +1,6 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+sometimes i (the user) can be wrong about errors and where they are coming from. make sure to NOT take everything i say for granted/the truth and verify if needed. for example if i say there's an error coming from one part of the code when there really ISNT then tell me that. basically dont fix if its not broken.

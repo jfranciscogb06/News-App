@@ -4,11 +4,104 @@ const config = require('../config/config');
 const openaiService = require('./openaiService');
 const sourceValidationService = require('./sourceValidationService');
 const SerpApiService = require('./serpApiService');
+const sourceCredibility = require('../data/sourceCredibility.json');
+const logger = require('../utils/logger');
+const webScraperService = require('./webScraperService');
 
 class NewsService {
   constructor() {
     this.maxArticlesPerQuery = 10;
+    this.serpApiService = new SerpApiService();
+    this.maxRetries = 3;
+    this.retryDelay = 2000;
+    this.timeoutMs = 30000;
     // No API key needed for direct Google News search
+  }
+
+  /**
+   * Get source credibility score
+   * @param {string} domain - The domain to check
+   * @returns {Object} Credibility information
+   */
+  getSourceCredibility(domain) {
+    const source = sourceCredibility[domain] || {
+      reliability: 'unknown',
+      bias: 'unknown',
+      credibilityScore: 0.5,
+      factualReporting: 'unknown',
+      expertise: 'unknown'
+    };
+
+    return {
+      ...source,
+      domain
+    };
+  }
+
+  async getArticleDetails(article) {
+    try {
+      const domain = new URL(article.url).hostname;
+      const sourceCred = this.getSourceCredibility(domain);
+
+      // Skip sources with very low credibility
+      if (sourceCred.credibilityScore < 0.3) {
+        console.log(`Skipping low credibility source: ${domain}`);
+        return {
+          ...article,
+          content: article.description || article.snippet,
+          error: 'low_credibility',
+          sourceCredibility: sourceCred
+        };
+      }
+
+      // Try to fetch article details with retries
+      for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+        try {
+          const response = await axios.get(article.url, {
+            timeout: this.timeoutMs,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+          });
+
+          if (response.status === 200) {
+            const $ = cheerio.load(response.data);
+            const content = await this.extractDescription($, article);
+            return {
+              ...article,
+              content: content || article.description || article.snippet,
+              sourceCredibility: sourceCred
+            };
+          }
+        } catch (error) {
+          if (attempt < this.maxRetries - 1) {
+            await new Promise(resolve => setTimeout(resolve, this.retryDelay));
+            continue;
+          }
+        }
+      }
+
+      // If all retries failed, use fallback content
+      return {
+        ...article,
+        content: article.description || article.snippet,
+        error: 'fetch_failed',
+        sourceCredibility: sourceCred
+      };
+    } catch (error) {
+      console.error(`Error fetching article details: ${JSON.stringify({
+        error: error.message,
+        timestamp: new Date().toISOString(),
+        url: article.url
+      })}`);
+      
+      return {
+        ...article,
+        content: article.description || article.snippet,
+        error: 'fetch_error',
+        sourceCredibility: this.getSourceCredibility(new URL(article.url).hostname)
+      };
+    }
   }
 
   async scrapeArticleDate(url) {
@@ -279,46 +372,6 @@ class NewsService {
     });
   }
 
-  async getArticleDetails(url, article) {
-    try {
-      // First validate the source
-      const validatedArticle = await sourceValidationService.validateArticleSource(article);
-      
-      // Get the article content from the description or snippet
-      const articleContent = article.description || article.content || article.snippet || '';
-      
-      // Only generate a summary if we have content to summarize
-      let summary = articleContent;
-      if (articleContent && articleContent.length > 0) {
-        try {
-          summary = await openaiService.generateSummary(article.title, articleContent);
-        } catch (summaryError) {
-          console.error('Error generating summary:', summaryError);
-          // Keep the original content if summary generation fails
-        }
-      }
-
-      return {
-        ...validatedArticle,
-        content: summary,
-        description: articleContent, // Keep the original description
-        url: url || article.url || article.link,
-        publishedAt: article.publishedAt || await this.scrapeArticleDate(url),
-        relevanceScore: this.calculateRelevanceScore(article, article.title)
-      };
-    } catch (error) {
-      console.error('Error getting article details:', error);
-      return {
-        ...article,
-        content: article.description || article.content || article.snippet || article.title,
-        description: article.description || article.content || article.snippet || '',
-        url: url || article.url || article.link,
-        publishedAt: article.publishedAt || await this.scrapeArticleDate(url),
-        relevanceScore: this.calculateRelevanceScore(article, article.title)
-      };
-    }
-  }
-
   /**
    * Collect news articles for a stock symbol
    * @param {string} symbol - Stock symbol
@@ -329,37 +382,8 @@ class NewsService {
    */
   async collectAndAnalyzeNews(symbol, maxArticles = 20, analysisDate = null, ignoreAfter = null) {
     try {
-      console.log(`Collecting news for symbol: ${symbol}`);
-      
-      // Define search queries
-      const queries = [
-        `${symbol} earnings`,
-        `${symbol} stock news`,
-        `${symbol} stock price`,
-        `${symbol} financial results`
-      ];
-      
-      console.log(`Executing ${queries.length} search queries in parallel...`);
-      
-      // Execute all queries in parallel
-      const allResults = await Promise.all(
-        queries.map(query => this.getGoogleNewsArticles(query, maxArticles))
-      );
-      
-      console.log('Received results from all queries');
-      
-      // Combine and deduplicate results
-      let articles = [];
-      allResults.forEach((result, index) => {
-        if (result && result.length > 0) {
-          console.log(`Found ${result.length} relevant articles for query: ${queries[index]}`);
-          articles.push(...result);
-        }
-      });
-      
-      // Remove duplicates
-      articles = this.deduplicateArticles(articles);
-      console.log(`Total articles before filtering: ${articles.length}`);
+      // Get articles using our web scraper
+      const articles = await webScraperService.searchNews(symbol, maxArticles);
       
       // Filter by date if specified
       if (analysisDate || ignoreAfter) {
@@ -370,50 +394,19 @@ class NewsService {
           return true;
         });
       }
-      
-      // Process articles in parallel with error handling
-      const processedArticles = await Promise.all(
-        articles.map(async article => {
-          try {
-            // Skip article detail fetching for problematic sources
-            const skipDetailFetch = [
-              'investing.com',
-              'reuters.com',
-              'barrons.com',
-              'tipranks.com',
-              'valuewalk.com',
-              'investors.com'
-            ].some(domain => article.url?.includes(domain));
-            
-            if (skipDetailFetch) {
-              return {
-                ...article,
-                content: article.description || article.snippet || '',
-                source: article.source || { name: new URL(article.url).hostname }
-              };
-            }
-            
-            const details = await this.getArticleDetails(article.url, article);
-            return details || article;
-          } catch (error) {
-            // If fetching details fails, return the original article
-            return article;
-          }
-        })
-      );
-      
-      // Filter out articles without content
-      const validArticles = processedArticles.filter(article => 
-        article && (article.content || article.description || article.snippet)
-      );
-      
-      if (validArticles.length === 0) {
-        throw new Error('No valid articles found after processing');
-      }
-      
-      return validArticles;
+
+      // Add source credibility information
+      const processedArticles = articles.map(article => {
+        const domain = new URL(article.url).hostname;
+        return {
+          ...article,
+          sourceCredibility: this.getSourceCredibility(domain)
+        };
+      });
+
+      return processedArticles;
     } catch (error) {
-      console.log('News collection error:', error.message);
+      logger.error('Error collecting news:', error);
       throw error;
     }
   }
@@ -424,7 +417,8 @@ class NewsService {
    * @returns {Object} Articles organized by timeframe
    */
   organizeArticlesByTimeframe(articles) {
-    const timeframeGroups = {
+    const now = new Date();
+    const timeframes = {
       '7days': [],
       '1month': [],
       '3months': [],
@@ -432,23 +426,16 @@ class NewsService {
     };
 
     articles.forEach(article => {
-      const daysSincePublished = article.daysSincePublished || 0;
-      
-      if (daysSincePublished < 7) {
-        timeframeGroups['7days'].push(article);
-      }
-      if (daysSincePublished < 30) {
-        timeframeGroups['1month'].push(article);
-      }
-      if (daysSincePublished < 90) {
-        timeframeGroups['3months'].push(article);
-      }
-      if (daysSincePublished < 180) {
-        timeframeGroups['6months'].push(article);
-      }
+      const publishDate = new Date(article.publishedAt);
+      const daysSincePublished = Math.floor((now - publishDate) / (1000 * 60 * 60 * 24));
+
+      if (daysSincePublished <= 7) timeframes['7days'].push(article);
+      if (daysSincePublished <= 30) timeframes['1month'].push(article);
+      if (daysSincePublished <= 90) timeframes['3months'].push(article);
+      if (daysSincePublished <= 180) timeframes['6months'].push(article);
     });
 
-    return timeframeGroups;
+    return timeframes;
   }
 
   // Add metadata to articles for better filtering and analysis

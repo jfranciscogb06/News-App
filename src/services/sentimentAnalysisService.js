@@ -5,6 +5,9 @@ const logger = require('../utils/logger');
 class SentimentAnalysisService {
   constructor() {
     this.openai = openaiService.openai;
+    this.batchSize = 3; // Reduced batch size to prevent overload
+    this.maxArticlesPerTimeframe = 5; // Reduced articles per timeframe
+    this.timeoutMs = 30000; // 30 second timeout
   }
 
   /**
@@ -15,119 +18,87 @@ class SentimentAnalysisService {
    */
   async prefilterArticles(symbol, articles) {
     try {
-      // Increase initial article collection to 100
-      if (articles.length <= 100) {
-        logger.info(`Only ${articles.length} articles, skipping prefiltering step`);
-        return articles;
-      }
-      
-      // First deduplicate articles based on title and content
-      const uniqueArticles = this.deduplicateArticles(articles);
-      logger.info(`Deduplicated ${articles.length} articles to ${uniqueArticles.length} unique articles`);
-      
-      const batchSize = 20;
-      const batches = [];
-      
-      // Split articles into batches
-      for (let i = 0; i < uniqueArticles.length; i += batchSize) {
-        batches.push(uniqueArticles.slice(i, i + batchSize));
-      }
-      
-      logger.info(`Split ${uniqueArticles.length} articles into ${batches.length} batches for parallel processing`);
-      
-      // Process each batch in sequence to prevent rate limiting
-      let allRelevantArticles = [];
-      
-      for (const batch of batches) {
-        const response = await this.openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "system",
-              content: `You are analyzing article titles to determine their relevance to ${symbol} stock price movement.
-              Return a JSON array of indices of relevant articles.
-              
-              Include ONLY the following types of articles:
-              1. Articles that directly discuss ${symbol}'s stock performance, company financials, or major company news
-              2. Articles about the industry or sector that could significantly affect ${symbol}'s stock price
-              3. Articles about relevant market conditions, regulations, or macroeconomic factors that would directly impact ${symbol}
-              4. Articles about direct competitors that could materially affect ${symbol}'s market position
-              5. Articles about tariffs, supply chain issues, or geopolitical events that specifically impact ${symbol} or its sector
-              6. Historical articles that provide important context for current market conditions
-              7. Articles about major product launches, acquisitions, or strategic moves by ${symbol}
-              8. Articles about significant analyst ratings or price target changes
-              
-              STRICTLY exclude:
-              - General market news with no direct relevance to ${symbol}
-              - Articles where ${symbol} or its industry is only mentioned tangentially
-              - Highly speculative or clickbait articles
-              - Articles so broad that they don't have a specific impact on ${symbol}
-              - Opinion pieces without concrete data or analysis
-              
-              IMPORTANT: Return ONLY a JSON array of indices, no markdown formatting or explanation.
-              Example: [0, 2, 5, 7, 9]`
-            },
-            {
-              role: "user",
-              content: JSON.stringify(batch.map((a, i) => ({ 
-                index: i, 
-                title: a.title,
-                date: a.publishedAt,
-                source: a.source?.name?.name || a.source
-              })))
-            }
-          ],
-          temperature: 0.1,
-          max_tokens: 500,
-          response_format: { type: "json_object" }
-        });
+      // Early filtering of low-quality articles
+      const filteredArticles = articles.filter(article => {
+        const text = (article.title + ' ' + article.description).toLowerCase();
+        return !text.includes('sponsored') && 
+               !text.includes('advertisement') && 
+               text.length > 50;
+      });
 
+      // Take only top 10 articles for prefiltering
+      const topArticles = filteredArticles
+        .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
+        .slice(0, 10);
+
+      // Process articles in parallel batches
+      const batches = this.createBatches(topArticles, this.batchSize);
+      const relevantIndices = new Set();
+
+      await Promise.all(batches.map(async (batch, batchIndex) => {
         try {
-          const content = response.choices[0].message.content;
-          let indices;
-          try {
-            const jsonResult = JSON.parse(content);
-            indices = Array.isArray(jsonResult) ? jsonResult : jsonResult.indices || [];
-          } catch (e) {
-            const jsonMatch = content.match(/\[.*\]/);
-            if (jsonMatch) {
-              indices = JSON.parse(jsonMatch[0]);
-            } else {
-              throw new Error("Could not parse indices from response");
-            }
-          }
-          
-          const relevantBatchArticles = indices.map(idx => batch[idx]).filter(Boolean);
-          allRelevantArticles.push(...relevantBatchArticles);
-          
-          logger.info(`Batch processed: ${relevantBatchArticles.length} relevant articles identified`);
-        } catch (err) {
-          logger.error(`Error parsing prefilter response: ${err.message}`);
-          allRelevantArticles.push(...batch);
+          const response = await this.openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "system",
+                content: `You are analyzing article titles to determine their relevance to ${symbol} stock price movement.
+                Return a JSON array of indices of relevant articles.
+                
+                Include ONLY the following types of articles:
+                1. Articles that directly discuss ${symbol}'s stock performance, company financials, or major company news
+                2. Articles about the industry or sector that could significantly affect ${symbol}'s stock price
+                3. Articles about relevant market conditions, regulations, or macroeconomic factors that would directly impact ${symbol}
+                4. Articles about direct competitors that could materially affect ${symbol}'s market position
+                5. Articles about tariffs, supply chain issues, or geopolitical events that specifically impact ${symbol} or its sector
+                6. Historical articles that provide important context for current market conditions
+                7. Articles about major product launches, acquisitions, or strategic moves by ${symbol}
+                8. Articles about significant analyst ratings or price target changes
+                
+                STRICTLY exclude:
+                - General market news with no direct relevance to ${symbol}
+                - Articles where ${symbol} or its industry is only mentioned tangentially
+                - Highly speculative or clickbait articles
+                - Articles so broad that they don't have a specific impact on ${symbol}
+                - Opinion pieces without concrete data or analysis
+                
+                IMPORTANT: Return ONLY a JSON array of indices, no markdown formatting or explanation.
+                Example: [0, 2, 5, 7, 9]`
+              },
+              {
+                role: "user",
+                content: JSON.stringify(batch.map((article, index) => ({
+                  index: batchIndex * this.batchSize + index,
+                  title: article.title,
+                  description: article.description
+                })))
+              }
+            ],
+            temperature: 0.1,
+            max_tokens: 100,
+            timeout: this.timeoutMs
+          });
+
+          const indices = JSON.parse(response.choices[0].message.content);
+          indices.forEach(index => relevantIndices.add(index));
+        } catch (error) {
+          console.error(`Error processing batch ${batchIndex}:`, error);
         }
-      }
-      
-      logger.info(`Prefiltering complete: ${allRelevantArticles.length} relevant articles from ${articles.length} total`);
-      
-      // If we filtered out too many articles, use the top ones sorted by recency and relevance
-      if (allRelevantArticles.length < 10 && articles.length > 10) {
-        logger.warn(`Too few articles (${allRelevantArticles.length}) after filtering, using top 20 recent articles instead`);
-        return articles
-          .sort((a, b) => {
-            const dateA = new Date(a.publishedAt || 0);
-            const dateB = new Date(b.publishedAt || 0);
-            const recencyScore = dateB - dateA;
-            const relevanceScore = (b.relevanceScore || 0) - (a.relevanceScore || 0);
-            return recencyScore + relevanceScore;
-          })
-          .slice(0, 20);
-      }
-      
-      return allRelevantArticles;
+      }));
+
+      return filteredArticles.filter((_, index) => relevantIndices.has(index));
     } catch (error) {
-      logger.error('Error in prefilterArticles:', error.message);
-      return articles;
+      console.error('Error in prefilterArticles:', error);
+      return articles; // Return all articles if filtering fails
     }
+  }
+
+  createBatches(items, batchSize) {
+    const batches = [];
+    for (let i = 0; i < items.length; i += batchSize) {
+      batches.push(items.slice(i, i + batchSize));
+    }
+    return batches;
   }
 
   /**
@@ -173,102 +144,95 @@ class SentimentAnalysisService {
   async analyzeSentimentAndPredict(symbol, articles) {
     try {
       const startTime = Date.now();
-      logger.info(`Starting sentiment analysis for ${symbol} with ${articles.length} articles`);
       
-      // First deduplicate articles
+      // Deduplicate articles first
       const uniqueArticles = this.deduplicateArticles(articles);
-      logger.info(`Deduplicated ${articles.length} articles to ${uniqueArticles.length} unique articles`);
       
-      // Early filtering of low-quality articles in parallel
-      const initialFiltering = uniqueArticles.filter(article => {
-        const text = (article.title + ' ' + article.description).toLowerCase();
-        return !text.includes('sponsored') && 
-               !text.includes('advertisement') && 
-               text.length > 50;
-      });
+      // Take only top 10 articles for analysis
+      const topArticles = uniqueArticles
+        .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
+        .slice(0, 10);
       
-      logger.info(`Initial filtering removed ${uniqueArticles.length - initialFiltering.length} low-quality articles`);
-
-      // Prefilter articles based on titles (this method already handles batching internally)
-      logger.info(`Prefiltering ${initialFiltering.length} articles based on titles...`);
-      const relevantArticles = await this.prefilterArticles(symbol, initialFiltering);
-      logger.info(`${relevantArticles.length} articles remained after prefiltering`);
-
-      // Score articles by informational value in parallel
-      logger.info(`Scoring articles by informational value in parallel...`);
-      const scoredArticles = await Promise.all(
-        relevantArticles.map(async article => {
-          const score = this.scoreArticle(article);
-          return { ...article, informationalScore: score };
-        })
-      );
-
-      // Sort articles by score and take top ones for analysis
-      const topArticles = scoredArticles
-        .sort((a, b) => b.informationalScore - a.informationalScore)
-        .slice(0, Math.min(30, scoredArticles.length));
-
-      // Final deduplication of top articles
-      const finalUniqueArticles = this.deduplicateArticles(topArticles);
-      logger.info(`Final deduplication: ${topArticles.length} to ${finalUniqueArticles.length} articles`);
-
-      // Organize articles by timeframe relevance
-      const timeframeArticles = this.organizeArticlesByTimeframe(finalUniqueArticles);
-      
-      // Process each timeframe in parallel
+      // Process timeframes in parallel
       const timeframes = ['7days', '1month', '3months', '6months'];
-      logger.info(`Processing ${timeframes.length} timeframes in parallel...`);
-      
       const timeframeAnalyses = await Promise.all(
         timeframes.map(async timeframe => {
           try {
-            const relevantTimeframeArticles = timeframeArticles[timeframe];
-            let timeframeAnalysis;
-            
-            if (!relevantTimeframeArticles || relevantTimeframeArticles.length === 0) {
-              logger.info(`No specific articles for timeframe ${timeframe}, using general articles`);
-              timeframeAnalysis = await this.analyzeSingleTimeframe(symbol, timeframe, topArticles.slice(0, 10));
-            } else {
-              logger.info(`Analyzing ${relevantTimeframeArticles.length} articles for timeframe ${timeframe}`);
-              timeframeAnalysis = await this.analyzeSingleTimeframe(symbol, timeframe, relevantTimeframeArticles);
-            }
-            
-            return { timeframe, analysis: timeframeAnalysis, success: true };
+            const analysis = await this.analyzeSingleTimeframe(symbol, timeframe, topArticles);
+            return { timeframe, analysis, success: true };
           } catch (error) {
-            logger.error(`Error processing timeframe ${timeframe}:`, error.message);
+            console.error(`Error processing timeframe ${timeframe}:`, error);
             return { 
               timeframe, 
               analysis: this.getFallbackAnalysis(timeframe), 
-              success: false,
-              error: error.message 
+              success: false 
             };
           }
         })
       );
-      
-      // Combine results into the analysis object
+
+      // Combine results
       const analysis = {};
-      let successCount = 0;
-      let errorCount = 0;
-      
-      for (const result of timeframeAnalyses) {
+      timeframeAnalyses.forEach(result => {
         analysis[result.timeframe] = result.analysis;
-        if (result.success) {
-          successCount++;
-        } else {
-          errorCount++;
-        }
-      }
-      
-      const endTime = Date.now();
-      const processingTime = (endTime - startTime) / 1000;
-      
-      logger.info(`Sentiment analysis completed for ${symbol} in ${processingTime}s: ${successCount} timeframes processed successfully, ${errorCount} errors`);
+      });
+
+      const processingTime = (Date.now() - startTime) / 1000;
+      console.log(`Analysis completed in ${processingTime}s`);
       
       return analysis;
     } catch (error) {
-      logger.error('Sentiment analysis error:', error.message);
+      console.error('Sentiment analysis error:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Parse the AI response for timeframe analysis
+   * @param {string} content - Raw response content
+   * @returns {Object} Parsed response
+   */
+  parseTimeframeAnalysisResponse(content) {
+    try {
+      // Clean the content string
+      const cleanContent = content
+        .trim()
+        .replace(/^```json\s*/, '')
+        .replace(/```$/, '')
+        .replace(/\s+/g, ' ')
+        .replace(/`/g, '')
+        .replace(/^[^{]*({.*})[^}]*$/, '$1');
+
+      // Try to parse the cleaned content
+      let parsed;
+      try {
+        parsed = JSON.parse(cleanContent);
+      } catch (e) {
+        // If parsing fails, try to extract JSON from the content
+        const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            parsed = JSON.parse(jsonMatch[0]);
+          } catch (e2) {
+            logger.error('Failed to parse extracted JSON:', e2.message);
+            return null;
+          }
+        } else {
+          logger.error('Could not find valid JSON in response');
+          return null;
+        }
+      }
+
+      // Validate the response structure
+      if (!parsed || !parsed.articles || !Array.isArray(parsed.articles)) {
+        logger.warn('Invalid response structure');
+        return null;
+      }
+
+      return parsed;
+    } catch (error) {
+      logger.error('Error parsing timeframe analysis response:', error);
+      return null;
     }
   }
 
@@ -277,7 +241,7 @@ class SentimentAnalysisService {
    * @param {Array} articles - Array of news articles
    * @returns {Object} Articles organized by timeframe
    */
-  organizeArticlesByTimeframe(articles) {
+  async organizeArticlesByTimeframe(articles) {
     const timeframes = {
       '7days': [],
       '1month': [],
@@ -285,30 +249,144 @@ class SentimentAnalysisService {
       '6months': []
     };
 
-    articles.forEach(article => {
-      const text = (article.title + ' ' + article.description).toLowerCase();
-      const pubDate = article.publishedDate || new Date(article.publishedAt);
+    // First pass: Quick rule-based categorization
+    const initialCategorization = articles.map(article => {
+      const text = (article.title + ' ' + (article.description || '')).toLowerCase();
+      const pubDate = new Date(article.publishedDate || article.publishedAt);
       const daysSincePublished = Math.floor((new Date() - pubDate) / (1000 * 60 * 60 * 24));
 
       // Check for timeframe-specific keywords
-      const hasShortTermTerms = /(next week|this week|days ahead|immediate|short term)/i.test(text);
-      const hasMonthTerms = /(next month|this month|monthly|coming weeks)/i.test(text);
-      const hasQuarterTerms = /(quarter|quarterly|q1|q2|q3|q4|months)/i.test(text);
-      const hasLongTermTerms = /(long term|year|yearly|annual|future|roadmap|outlook|strategic)/i.test(text);
+      const hasShortTermTerms = /(next week|this week|days ahead|immediate|short term|resolve next week|coming days)/i.test(text);
+      const hasMonthTerms = /(next month|this month|monthly|coming weeks|in september|next quarter)/i.test(text);
+      const hasQuarterTerms = /(quarter|quarterly|q1|q2|q3|q4|months|three months)/i.test(text);
+      const hasLongTermTerms = /(long term|year|yearly|annual|future|roadmap|outlook|strategic|over.*months)/i.test(text);
 
-      // Categorize based on content and publication date
-      if (hasShortTermTerms || (daysSincePublished <= 7)) {
-        timeframes['7days'].push(article);
+      // Rule-based timeframe relevance with content analysis
+      const timeframeRelevance = {
+        '7days': hasShortTermTerms || daysSincePublished <= 7,
+        '1month': hasMonthTerms || daysSincePublished <= 30,
+        '3months': hasQuarterTerms || daysSincePublished <= 90,
+        '6months': hasLongTermTerms || daysSincePublished <= 180
+      };
+
+      return {
+        article,
+        timeframeRelevance,
+        text,
+        daysSincePublished,
+        hasShortTermTerms,
+        hasMonthTerms,
+        hasQuarterTerms,
+        hasLongTermTerms
+      };
+    });
+
+    // Second pass: AI-based refinement for articles that could be in multiple timeframes
+    const articlesNeedingRefinement = initialCategorization.filter(item => {
+      const relevantTimeframes = Object.values(item.timeframeRelevance).filter(Boolean).length;
+      return relevantTimeframes > 1 && !item.hasShortTermTerms; // Skip articles with clear short-term indicators
+    });
+
+    if (articlesNeedingRefinement.length > 0) {
+      try {
+        // Prepare batch for OpenAI
+        const batch = articlesNeedingRefinement.map(item => ({
+          title: item.article.title,
+          description: item.article.description || '',
+          publishedAt: item.article.publishedAt,
+          source: item.article.source?.name || 'Unknown',
+          text: item.text,
+          daysSincePublished: item.daysSincePublished,
+          currentTimeframes: Object.entries(item.timeframeRelevance)
+            .filter(([_, isRelevant]) => isRelevant)
+            .map(([timeframe]) => timeframe)
+        }));
+
+        // Get AI-based timeframe relevance
+        const response = await this.openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: `You are a financial news analyzer specializing in determining the most relevant timeframes for stock market news articles.
+
+              For each article, analyze its content and context to determine which timeframe(s) the article is most relevant for.
+              Consider:
+              1. Explicit timeframe mentions in the content
+              2. Nature of the news (e.g., earnings reports, product launches, strategic plans)
+              3. Typical impact duration of similar news
+              4. Market reaction timeframes
+              5. Publication date relative to events mentioned
+
+              Return a JSON object with an "articles" array containing objects with:
+              {
+                "articleIndex": number (index in the input array),
+                "timeframes": string[] (array of relevant timeframes: "7days", "1month", "3months", "6months"),
+                "confidence": "high" | "medium" | "low",
+                "reason": string (brief explanation)
+              }`
+            },
+            {
+              role: "user",
+              content: JSON.stringify(batch)
+            }
+          ],
+          temperature: 0.3,
+          max_tokens: 1000,
+          response_format: { type: "json_object" }
+        });
+
+        // Parse AI response
+        const aiResponse = this.parseTimeframeAnalysisResponse(response.choices[0].message.content);
+        
+        if (aiResponse && aiResponse.articles) {
+          // Update timeframe assignments based on AI analysis
+          aiResponse.articles.forEach(analysis => {
+            if (typeof analysis.articleIndex === 'number' && 
+                analysis.articleIndex >= 0 && 
+                analysis.articleIndex < articlesNeedingRefinement.length) {
+              const articleItem = articlesNeedingRefinement[analysis.articleIndex];
+              
+              // Only update if we have valid timeframes
+              if (Array.isArray(analysis.timeframes)) {
+                // Reset timeframe relevance based on AI analysis
+                articleItem.timeframeRelevance = {
+                  '7days': analysis.timeframes.includes('7days'),
+                  '1month': analysis.timeframes.includes('1month'),
+                  '3months': analysis.timeframes.includes('3months'),
+                  '6months': analysis.timeframes.includes('6months')
+                };
+                
+                // Log the AI's reasoning
+                logger.debug(`AI analysis for "${articleItem.article.title}":`, {
+                  timeframes: analysis.timeframes,
+                  confidence: analysis.confidence,
+                  reason: analysis.reason
+                });
+              }
+            }
+          });
+        } else {
+          logger.warn('Invalid AI response format, falling back to rule-based categorization');
+        }
+      } catch (error) {
+        logger.error('Error in AI-based timeframe analysis:', error);
+        // Fall back to rule-based categorization if AI analysis fails
       }
-      if (hasMonthTerms || (daysSincePublished <= 30 && !hasShortTermTerms)) {
-        timeframes['1month'].push(article);
-      }
-      if (hasQuarterTerms || (daysSincePublished <= 90 && !hasMonthTerms)) {
-        timeframes['3months'].push(article);
-      }
-      if (hasLongTermTerms || (daysSincePublished <= 180 && !hasQuarterTerms)) {
-        timeframes['6months'].push(article);
-      }
+    }
+
+    // Final categorization
+    initialCategorization.forEach(item => {
+      Object.entries(item.timeframeRelevance).forEach(([timeframe, isRelevant]) => {
+        if (isRelevant) {
+          timeframes[timeframe].push(item.article);
+        }
+      });
+    });
+
+    // Log distribution
+    Object.entries(timeframes).forEach(([timeframe, articles]) => {
+      logger.info(`Timeframe ${timeframe}: ${articles.length} articles`);
     });
 
     return timeframes;
@@ -484,32 +562,47 @@ class SentimentAnalysisService {
   }
 
   calculateSourceCredibility(articles) {
-    const sourceScores = {};
-    const sourceCounts = {};
-    
+    const credibleSources = new Set([
+      'bloomberg.com',
+      'reuters.com',
+      'wsj.com',
+      'ft.com',
+      'cnbc.com',
+      'marketwatch.com',
+      'investing.com',
+      'seekingalpha.com',
+      'yahoo.com/finance',
+      'fool.com'
+    ]);
+
+    const sourceDistribution = {};
+    let credibleCount = 0;
+
     articles.forEach(article => {
-      const source = article.source?.name || 'Unknown';
-      const score = article.credibilityScore?.score || 50;
-      
-      if (!sourceScores[source]) {
-        sourceScores[source] = 0;
-        sourceCounts[source] = 0;
+      try {
+        const url = new URL(article.url);
+        const domain = url.hostname;
+        
+        // Count source distribution
+        sourceDistribution[domain] = (sourceDistribution[domain] || 0) + 1;
+        
+        // Check if source is credible
+        if (credibleSources.has(domain)) {
+          credibleCount++;
+        }
+      } catch (error) {
+        logger.error('Error parsing URL:', error);
       }
-      
-      sourceScores[source] += score;
-      sourceCounts[source]++;
     });
-    
-    // Calculate average scores
-    const averageScores = {};
-    for (const source in sourceScores) {
-      averageScores[source] = sourceScores[source] / sourceCounts[source];
-    }
-    
+
+    const totalSources = Object.keys(sourceDistribution).length;
+    const credibilityScore = totalSources > 0 ? (credibleCount / totalSources) * 100 : 0;
+
     return {
-      scores: averageScores,
-      totalSources: Object.keys(sourceScores).length,
-      averageScore: Object.values(averageScores).reduce((a, b) => a + b, 0) / Object.keys(averageScores).length
+      total_sources: totalSources,
+      credible_sources: credibleCount,
+      source_distribution: sourceDistribution,
+      credibility_score: credibilityScore
     };
   }
 
@@ -561,10 +654,99 @@ class SentimentAnalysisService {
         .replace(/`/g, '')
         .replace(/^[^{]*({.*})[^}]*$/, '$1');
 
-      return JSON.parse(cleanContent);
+      // Try to parse the cleaned content
+      let parsed;
+      try {
+        parsed = JSON.parse(cleanContent);
+      } catch (e) {
+        // If parsing fails, try to extract JSON from the content
+        const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            parsed = JSON.parse(jsonMatch[0]);
+          } catch (e2) {
+            logger.error('Failed to parse extracted JSON:', e2.message);
+            throw new Error('Could not parse JSON from response');
+          }
+        } else {
+          throw new Error('Could not find valid JSON in response');
+        }
+      }
+
+      // Log the parsed content for debugging
+      logger.debug('Parsed OpenAI response:', parsed);
+
+      // Ensure all required fields are present
+      const requiredFields = {
+        sentiment_score: 0,
+        prediction: 'SIDEWAYS',
+        confidence: 'low',
+        magnitude: 'slight',
+        key_factors: [],
+        key_articles: [],
+        risks: []
+      };
+
+      // Fill in missing fields with defaults
+      for (const [field, defaultValue] of Object.entries(requiredFields)) {
+        if (!(field in parsed)) {
+          logger.warn(`Missing field ${field} in OpenAI response, using default value`);
+          parsed[field] = defaultValue;
+        }
+      }
+
+      // Validate numeric fields
+      if (typeof parsed.sentiment_score !== 'number') {
+        logger.warn('Invalid sentiment_score type, using default value');
+        parsed.sentiment_score = 0;
+      }
+
+      // Validate prediction
+      if (!['UP', 'DOWN', 'SIDEWAYS'].includes(parsed.prediction)) {
+        logger.warn('Invalid prediction value, using default value');
+        parsed.prediction = 'SIDEWAYS';
+      }
+
+      // Validate confidence
+      if (!['high', 'medium', 'low'].includes(parsed.confidence)) {
+        logger.warn('Invalid confidence value, using default value');
+        parsed.confidence = 'low';
+      }
+
+      // Validate magnitude
+      if (!['strong', 'moderate', 'slight'].includes(parsed.magnitude)) {
+        logger.warn('Invalid magnitude value, using default value');
+        parsed.magnitude = 'slight';
+      }
+
+      // Ensure arrays are arrays
+      if (!Array.isArray(parsed.key_factors)) {
+        logger.warn('Invalid key_factors type, using default value');
+        parsed.key_factors = [];
+      }
+      if (!Array.isArray(parsed.key_articles)) {
+        logger.warn('Invalid key_articles type, using default value');
+        parsed.key_articles = [];
+      }
+      if (!Array.isArray(parsed.risks)) {
+        logger.warn('Invalid risks type, using default value');
+        parsed.risks = [];
+      }
+
+      return parsed;
     } catch (error) {
       logger.error('OpenAI response parsing error:', error.message);
-      throw new Error('Invalid response format from OpenAI');
+      logger.error('Raw response content:', content);
+      // Return a default analysis object instead of throwing
+      return {
+        sentiment_score: 0,
+        prediction: 'SIDEWAYS',
+        confidence: 'low',
+        magnitude: 'slight',
+        key_factors: [],
+        key_articles: [],
+        risks: []
+      };
     }
   }
 
