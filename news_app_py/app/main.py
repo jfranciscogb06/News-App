@@ -3,12 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
 
 from app.core.config import settings
 from app.api.endpoints import news
 from app.services.news import news_service
 from app.db.base import Base
 from app.db.session import engine
+from app.services.recommendation_cache_updater import update_recommendations_periodically
 
 
 app = FastAPI(
@@ -52,6 +54,8 @@ async def startup_event():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created")
+    # Start background recommendation updater
+    asyncio.create_task(update_recommendations_periodically())
 
 @app.on_event("shutdown")
 async def shutdown_event():

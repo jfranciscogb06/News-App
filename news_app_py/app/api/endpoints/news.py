@@ -2,6 +2,9 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import JSONResponse
+import os
+import json
+from redis.asyncio import Redis
 
 from app.db.session import get_db
 from app.services.news import news_service
@@ -11,6 +14,8 @@ from app.schemas.news import (
 )
 
 router = APIRouter()
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 @router.get("/{ticker}", response_model=List[NewsInDB])
@@ -103,34 +108,17 @@ async def get_stock_recommendation(
 ):
     """
     Get a buy/sell recommendation for a stock based on news analysis.
-    Includes confidence scores, reasoning, and risk assessment.
+    Only returns the cached recommendation. If not present, returns 404.
     """
+    redis = Redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    key = f"recommendation:{ticker.upper()}"
+    cached = await redis.get(key)
+    if not cached:
+        raise HTTPException(status_code=404, detail=f"No cached recommendation for {ticker.upper()}.")
     try:
-        # Fetch and analyze news
-        news = await news_service.fetch_and_analyze_top_news(ticker, top_count)
-        
-        # Convert to dict format
-        articles = [
-            {
-                "title": a.title,
-                "url": a.url,
-                "source": a.source,
-                "published_at": a.published_at,
-                "summary": a.summary,
-                "sentiment": a.sentiment,
-                "sentiment_score": a.sentiment_score,
-                "confidence_score": a.confidence_score,
-                "impact_score": a.impact_score
-            }
-            for a in news
-        ]
-        
-        # Generate recommendation
-        recommendation = await news_service.generate_stock_recommendation(ticker, articles, time_frame)
-        return recommendation
-        
+        return json.loads(cached)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error decoding cached recommendation: {e}")
 
 
 @router.get("/{ticker}/multi-timeframe", response_model=MultiTimeframeAnalysis)
