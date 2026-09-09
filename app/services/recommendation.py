@@ -35,14 +35,14 @@ def aggregate(subject: str, articles: list[Article], sentiments: list[ArticleSen
 
 
 def weighted_sentiment(pairs: list[tuple[Article, ArticleSentiment]], now: datetime | None = None) -> float:
-    """Σ(score × weight) / Σ(weight), weight = recency × source × model confidence."""
+    """Σ(score × weight) / Σ(weight), weight = recency × source × confidence × relevance."""
     now = now or datetime.now()
     total, weight_sum = 0.0, 0.0
     for article, s in pairs:
         hours_old = max(0.0, (now - article.published_at).total_seconds() / 3600)
         recency = max(0.15, math.exp(-hours_old / 48))  # half-ish weight after ~1.5 days
         source = SOURCE_WEIGHTS.get(article.source_domain, 0.6)
-        w = recency * source * (s.confidence / 10)
+        w = recency * source * (s.confidence / 10) * max(0.1, s.relevance / 10)
         total += s.sentiment_score * w
         weight_sum += w
     return total / weight_sum if weight_sum else 0.0

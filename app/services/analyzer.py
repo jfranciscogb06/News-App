@@ -28,7 +28,7 @@ class StockAnalyzer:
     ) -> AnalyzeResponse:
         ticker = ticker.upper()
         started = datetime.now()
-        cache_key = f"analysis:v2:{ticker}:{max_articles}:{int(include_sector)}"
+        cache_key = f"analysis:v3:{ticker}:{max_articles}:{int(include_sector)}"
 
         if not force_refresh:
             cached = await self.cache.get(cache_key)
@@ -69,7 +69,7 @@ class StockAnalyzer:
                 articles=[
                     ArticleRef(
                         title=a.title, url=a.url, source=a.source, published_at=a.published_at,
-                        sentiment_score=s.sentiment_score, summary=s.summary,
+                        sentiment_score=s.sentiment_score, relevance=s.relevance, summary=s.summary,
                     )
                     for a, s in zip(articles, sentiments) if s is not None
                 ],

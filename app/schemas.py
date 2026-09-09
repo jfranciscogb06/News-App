@@ -54,6 +54,7 @@ class ArticleSentiment(BaseModel):
     """What the model said about one article."""
     sentiment_score: float = Field(ge=-100, le=100)
     confidence: int = Field(ge=1, le=10)
+    relevance: int = Field(default=10, ge=0, le=10, description="How much the article is actually about the subject")
     key_themes: list[str] = []
     time_horizon: TimeHorizon = TimeHorizon.SHORT_TERM
     risk_factors: list[str] = []
@@ -80,6 +81,7 @@ class ArticleRef(BaseModel):
     source: str
     published_at: datetime
     sentiment_score: float
+    relevance: int
     summary: str
 
 

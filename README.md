@@ -54,7 +54,7 @@ Example response (trimmed):
   "time_horizon": "short-term",
   "summary": "6 recent articles show positive sentiment for AAPL (+29). ...",
   "articles": [
-    {"title": "Apple to Unveil First Foldable Phone", "source": "Bloomberg", "url": "...", "sentiment_score": 60, "summary": "..."}
+    {"title": "Apple to Unveil First Foldable Phone", "source": "Bloomberg", "url": "...", "sentiment_score": 60, "relevance": 10, "summary": "..."}
   ],
   "processing_time_seconds": 6.5,
   "cache_hit": false
@@ -67,8 +67,8 @@ Example response (trimmed):
 
 1. **Discover** — `app/services/scraper.py` loads the Finviz quote page, which lists ~100 recent headlines with outbound links, source and timestamp.
 2. **Fetch** — only links to `finance.yahoo.com` and `www.investors.com` are followed. Both serve full article text to a plain HTTP client. Yahoo syndicates Bloomberg, Reuters, Barron's, Motley Fool, Benzinga etc., so coverage is broad. Barron's, MarketWatch and WSJ direct links are paywalled and skipped.
-3. **Score** — `app/services/sentiment.py` sends each article to OpenAI (`gpt-4o-mini` by default, JSON mode) and gets back a -100..100 score, confidence, themes, risks and a one-line summary.
-4. **Aggregate** — `app/services/recommendation.py` weights each score by recency (48h half-life), source and model confidence. ≥ +30 is BUY, ≤ -30 is SELL.
+3. **Score** — `app/services/sentiment.py` sends each article to OpenAI (`gpt-4o-mini` by default, JSON mode) with a scoring rubric and gets back a -100..100 score, a 0-10 relevance (is the article really about this stock?), confidence, themes, risks and a one-line summary. The prompts live at the top of that file.
+4. **Aggregate** — `app/services/recommendation.py` weights each score by recency (48h half-life), source, model confidence and relevance. ≥ +30 is BUY, ≤ -30 is SELL.
 5. **Cache** — results are kept in Redis for 30 minutes. If Redis isn't running the app just logs a warning and runs uncached.
 
 ## Configuration

@@ -10,26 +10,44 @@ from app.schemas import Article, ArticleSentiment, TimeHorizon
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (
-    "You are a financial analyst. Read the article and judge how it affects the "
-    "given stock (or sector). Be balanced; do not invent facts not in the article. "
-    "Respond only with JSON."
-)
+SYSTEM_PROMPT = """You are a sell-side equity analyst writing a quick read on a single news article for a portfolio manager.
 
-USER_PROMPT = """Subject: {subject}
-Title: {title}
+Your job: judge what this article means for the price of the SUBJECT over the coming days to months. Grade the news itself, not the writer's tone. Headlines are often hype; look for facts that change earnings, revenue, margins, demand, competition, regulation, or management.
 
-Article:
+Rules:
+- Use only what the article says. Never add outside facts or assumptions.
+- A stock price move that already happened is context, not news. Score what comes next.
+- Relevance means: does this article change the investment case for the SUBJECT? Give low relevance (0-3) to articles where the subject is a bystander: an analyst note the subject's firm published about another company, an executive's personal or charity news, a market wrap that name-drops the subject, or product news about a different company. Low-relevance articles should score close to 0 regardless of tone.
+- Ignore ads, newsletter sign-ups, disclaimers, and unrelated "related stories" text.
+- Be decisive when the facts are clear; stay near 0 when they are genuinely mixed or immaterial.
+- Output valid JSON only. No prose outside the JSON."""
+
+USER_PROMPT = """SUBJECT: {subject}
+TITLE: {title}
+
+ARTICLE:
+\"\"\"
 {content}
+\"\"\"
+
+Scoring rubric for sentiment_score (impact on {subject}):
+  +70 to +100  Clearly material good news: earnings/guidance beat, big contract, approval, buyback, upgrade with new facts
+  +30 to +69   Solidly positive: strong product reception, favorable analyst view, good sector tailwind
+  +10 to +29   Mildly positive or positive-leaning commentary
+  -9 to +9     Neutral, mixed, immaterial, or not really about {subject}
+  -10 to -29   Mildly negative or cautious commentary
+  -30 to -69   Solidly negative: weak demand, margin pressure, lost deal, downgrade, legal/regulatory pressure
+  -70 to -100  Clearly material bad news: earnings/guidance miss, major recall, fraud, key exec exit under a cloud
 
 Return JSON with exactly these keys:
 {{
-  "sentiment_score": number from -100 (very negative for {subject}) to 100 (very positive),
-  "confidence": integer 1-10, how confident you are in the score,
-  "key_themes": up to 4 short lowercase themes (e.g. "earnings", "regulation", "ai"),
-  "time_horizon": one of "immediate", "short-term", "long-term",
-  "risk_factors": up to 3 short risks mentioned or implied,
-  "summary": 1-2 sentences on what this means for {subject}
+  "relevance": integer 0-10. 10 = the article is about {subject}'s own business, results, products, or stock; 5 = partly about it; 0-3 = subject is only mentioned, quoted, or is the author of research about someone else,
+  "sentiment_score": integer -100 to 100 per the rubric above. Use the full range (e.g. 45, -18, 72), not just bucket edges,
+  "confidence": integer 1-10. High only when the article contains concrete, verifiable facts (numbers, decisions, official statements). Speculation or opinion pieces should be 3-5,
+  "key_themes": up to 4 lowercase snake_case tags naming the drivers, e.g. "earnings", "product_launch", "regulation", "ai_demand", "margins", "guidance",
+  "time_horizon": "immediate" (days), "short-term" (weeks to a quarter), or "long-term" (multiple quarters),
+  "risk_factors": up to 3 short, specific risks the article raises or clearly implies for {subject}. Empty list if none,
+  "summary": one or two plain sentences: what happened and why it matters for {subject}. No hedging filler
 }}"""
 
 
@@ -85,6 +103,7 @@ def normalize(data: dict, tokens_used: int | None = None) -> ArticleSentiment:
     return ArticleSentiment(
         sentiment_score=max(-100.0, min(100.0, num(data.get("sentiment_score"), 0.0))),
         confidence=max(1, min(10, int(num(data.get("confidence"), 5)))),
+        relevance=max(0, min(10, int(num(data.get("relevance"), 10)))),
         key_themes=[t.lower() for t in str_list(data.get("key_themes"), 4)],
         time_horizon=TimeHorizon(horizon),
         risk_factors=str_list(data.get("risk_factors"), 3),
